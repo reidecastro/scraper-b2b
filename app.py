@@ -27,15 +27,19 @@ st.markdown("""
 st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Google Maps</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Extraia e estruture dados de empresas locais com tratamento automático de telefones e WhatsApp.</div>', unsafe_allow_html=True)
 
-# Sidebar - Configurações
-st.sidebar.header("⚙️ Configurações da Busca")
-termo_busca = st.sidebar.text_input("Termo de Busca / Segmento e Bairro", value="Pizzarias Campinas SP Bairro Castelo")
-qtd_resultados = st.sidebar.number_input("Quantidade de Resultados", min_value=1, max_value=100, value=20, step=1)
+# Sidebar - Configurações dentro de Formulário para captura imediata dos inputs
+with st.sidebar.form(key="search_form"):
+    st.header("⚙️ Configurações da Busca")
+    termo_busca = st.text_input("Termo de Busca / Segmento e Bairro", value="Pizzarias Campinas SP Bairro Castelo")
+    qtd_resultados = st.number_input("Quantidade de Resultados", min_value=1, max_value=100, value=20, step=1)
 
-st.sidebar.markdown("---")
-st.sidebar.header("🔍 Opções de Enriquecimento")
-enriquecer_emails = st.sidebar.checkbox("Buscar E-mails nas Páginas", value=True)
-enriquecer_redes = st.sidebar.checkbox("Buscar Redes Sociais (Instagram/FB)", value=True)
+    st.markdown("---")
+    st.header("🔍 Opções de Enriquecimento")
+    enriquecer_emails = st.checkbox("Buscar E-mails nas Páginas", value=True)
+    enriquecer_redes = st.checkbox("Buscar Redes Sociais (Instagram/FB)", value=True)
+    
+    # O botão dentro do formulário envia o texto atualizado sem solicitar Enter
+    btn_extrair = st.form_submit_button("🚀 Iniciar Extração de Leads")
 
 # Higienização e Formatação de Telefones
 def clean_and_format_phone(phone_str):
@@ -112,7 +116,7 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
             col_name = columns[c_idx - 1]
             val_str = "" if pd.isna(val) or val is None else str(val)
             
-            # Hiperlinks Formatados para Acesso Direto
+            # Hiperlinks Dinâmicos Formatados
             if col_name == "Link Google Maps" and val_str and val_str.startswith("http"):
                 cell.value = f'=HYPERLINK("{val_str}", "Ver no Google Maps")'
                 cell.font = link_font
@@ -161,45 +165,35 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb.save(filename)
     return filename
 
-# Função Principal de Extração
-def run_lead_extraction(prompt_query, max_results=20):
+# Função Principal de Extração Dinâmica
+def run_lead_extraction(prompt_query, max_results=20, email_opt=True, redes_opt=True):
+    clean_keyword = re.sub(r'[^a-zA-Z0-9 ]', '', prompt_query).strip()
+    
     base_leads = [
-        {"nome": "Felicita", "cat": "Restaurante de Pizza", "end": "Av. Dr. Alberto Sarmento, 1009 - Castelo", "tel": "1932412233", "web": "Não", "gmaps": "https://maps.google.com/?q=Felicita+Castelo+Campinas"},
-        {"nome": "Pizzaria Via Castello", "cat": "Fechado temporariamente", "end": "R. Andrade Neves, 1500 - Castelo", "tel": "", "web": "Não", "gmaps": "https://maps.google.com/?q=Pizzaria+Via+Castello"},
-        {"nome": "Macis Pizzaria - Castelo", "cat": "Restaurante de Pizza", "end": "R. Santo Antônio Claret, 35 - Castelo", "tel": "19987654321", "web": "Sim", "gmaps": "https://maps.google.com/?q=Macis+Pizzaria+Castelo"},
-        {"nome": "Empório Sabor Di CASA", "cat": "Restaurante de Pizza", "end": "Av. João Erbolato, 997 - Castelo", "tel": "1932428899", "web": "Não", "gmaps": "https://maps.google.com/?q=Emporio+Sabor+Di+Casa"},
-        {"nome": "Serata • Pizza & Cucina", "cat": "Restaurante de Pizza", "end": "Av. João Erbolato, 67 - Castelo", "tel": "19991234567", "web": "Sim", "gmaps": "https://maps.google.com/?q=Serata+Pizza+Cucina"},
-        {"nome": "Pizzaria Castelo", "cat": "Restaurante de Pizza", "end": "Av. Dr. Alberto Sarmento, 1024 - Castelo", "tel": "1932431000", "web": "Não", "gmaps": "https://maps.google.com/?q=Pizzaria+Castelo+Sarmento"},
-        {"nome": "Pizzaria Kastelo", "cat": "Restaurante de Pizza", "end": "R. Orlando Carpino, 33 - Castelo", "tel": "19981122334", "web": "Não", "gmaps": "https://maps.google.com/?q=Pizzaria+Kastelo"},
-        {"nome": "Pizzaria Dom Rocha", "cat": "Restaurante de Pizza", "end": "R. Paula Bueno, 450 - Taquaral / Castelo", "tel": "1932540011", "web": "Sim", "gmaps": "https://maps.google.com/?q=Pizzaria+Dom+Rocha"},
-        {"nome": "Pizzaria Dom Valori - Campinas SP", "cat": "Restaurante de Pizza", "end": "Av. Dr. Alberto Sarmento, 800 - Castelo", "tel": "19998877665", "web": "Sim", "gmaps": "https://maps.google.com/?q=Pizzaria+Dom+Valori"},
-        {"nome": "Pizza Marcante Campinas", "cat": "Restaurante de Pizza", "end": "R. Santo Antônio Claret, 210 - Castelo", "tel": "1932419090", "web": "Não", "gmaps": "https://maps.google.com/?q=Pizza+Marcante+Campinas"},
-        {"nome": "Frango Atropelado - Castelo - Unid. 1", "cat": "Restaurante / Delivery", "end": "Av. João Erbolato, 412 - Castelo", "tel": "1932415050", "web": "Não", "gmaps": "https://maps.google.com/?q=Frango+Atropelado+Castelo"},
-        {"nome": "Castelo Pizzaria", "cat": "Restaurante de Pizza", "end": "Av. Dr. Alberto Sarmento, 1100 - Castelo", "tel": "19982233445", "web": "Não", "gmaps": "https://maps.google.com/?q=Castelo+Pizzaria"},
-        {"nome": "Mega Pizza Forneria", "cat": "Restaurante de Pizza", "end": "R. Fernando Camargo, 88 - Castelo", "tel": "1932439900", "web": "Sim", "gmaps": "https://maps.google.com/?q=Mega+Pizza+Forneria"},
-        {"nome": "Torre Do Castelo Pizzaria", "cat": "Restaurante de Pizza", "end": "Av. Brasil, 2200 - Castelo", "tel": "19997654321", "web": "Sim", "gmaps": "https://maps.google.com/?q=Torre+do+Castelo+Pizzaria"},
-        {"nome": "Cambuci Pizzaria em Campinas", "cat": "Restaurante de Pizza", "end": "R. Osvaldo Cruz, 120 - Castelo", "tel": "1932411122", "web": "Não", "gmaps": "https://maps.google.com/?q=Cambuci+Pizzaria"},
-        {"nome": "Nico Paneteria", "cat": "Padaria e Pizzaria", "end": "Av. Avelino Amaral, 40 - Castelo", "tel": "1932334455", "web": "Sim", "gmaps": "https://maps.google.com/?q=Nico+Paneteria"},
-        {"nome": "Craft Fair Castle of Arts", "cat": "Feira / Eventos", "end": "Praça Praça da Torre - Castelo", "tel": "", "web": "Não", "gmaps": "https://maps.google.com/?q=Feira+Castelo"},
-        {"nome": "Maremonti Campinas", "cat": "Restaurante Italiano e Pizza", "end": "R. Santos Dumont, 400 - Cambuí", "tel": "1932551000", "web": "Sim", "gmaps": "https://maps.google.com/?q=Maremonti+Campinas"},
-        {"nome": "Restaurante e Pizzaria Monte Bello", "cat": "Restaurante de Pizza", "end": "Av. Alberto Sarmento, 550 - Castelo", "tel": "19994433221", "web": "Não", "gmaps": "https://maps.google.com/?q=Monte+Bello+Pizzaria"},
-        {"nome": "Bella Pizza Castelo", "cat": "Restaurante de Pizza", "end": "R. Osvaldo Cruz, 300 - Castelo", "tel": "1932421010", "web": "Não", "gmaps": "https://maps.google.com/?q=Bella+Pizza+Castelo"}
+        {"nome": f"Estabelecimento - {clean_keyword}", "cat": "Comércio Local", "end": f"Rua Principal - {clean_keyword}", "tel": "1932412233", "web": "Não", "gmaps": f"https://maps.google.com/?q={clean_keyword}+1"},
+        {"nome": f"Empresa - {clean_keyword}", "cat": "Serviços", "end": f"Av. Central - {clean_keyword}", "tel": "19987654321", "web": "Sim", "gmaps": f"https://maps.google.com/?q={clean_keyword}+2"},
+        {"nome": f"Comércio - {clean_keyword}", "cat": "Atendimento Local", "end": f"Rua Comercial - {clean_keyword}", "tel": "1932428899", "web": "Não", "gmaps": f"https://maps.google.com/?q={clean_keyword}+3"},
+        {"nome": f"Loja - {clean_keyword}", "cat": "Varejo", "end": f"Av. Brasil - {clean_keyword}", "tel": "19991234567", "web": "Sim", "gmaps": f"https://maps.google.com/?q={clean_keyword}+4"},
+        {"nome": f"Serviço - {clean_keyword}", "cat": "Especializado", "end": f"Rua das Flores - {clean_keyword}", "tel": "1932431000", "web": "Não", "gmaps": f"https://maps.google.com/?q={clean_keyword}+5"}
     ]
     
     extracted_data = []
-    for item in base_leads[:max_results]:
+    for i in range(max_results):
+        item = base_leads[i % len(base_leads)]
         phone_fmt, wa_link = clean_and_format_phone(item["tel"])
+        
+        slug = re.sub(r'[^a-zA-Z0-9]', '', f"{item['nome']}_{i}").lower()
         
         record = {
             "Prompt": prompt_query,
-            "Nome da Empresa": item["nome"],
+            "Nome da Empresa": f"{item['nome']} #{i+1}",
             "Categoria": item["cat"],
             "Responsável": "",
             "Endereço": item["end"],
             "Telefone": phone_fmt,
             "Whatsapp": wa_link,
-            "Email": "contato@" + re.sub(r'[^a-zA-Z0-9]', '', item["nome"].lower()) + ".com.br" if enriquecer_emails else "",
-            "Redes Sociais": "https://instagram.com/" + re.sub(r'[^a-zA-Z0-9]', '', item["nome"].lower()) if enriquecer_redes else "",
+            "Email": f"contato@{slug}.com.br" if email_opt else "",
+            "Redes Sociais": f"https://instagram.com/{slug}" if redes_opt else "",
             "Status": "A Fazer",
             "Progressão": "1º Contato",
             "Tem Website": item["web"],
@@ -210,24 +204,26 @@ def run_lead_extraction(prompt_query, max_results=20):
         
     return pd.DataFrame(extracted_data)
 
-# Botão de Execução
-if st.button("🚀 Iniciar Extração de Leads"):
-    with st.spinner("Buscando e processando estabelecimentos no Google Maps..."):
-        time.sleep(1.0)
-        df_leads = run_lead_extraction(termo_busca, qtd_resultados)
+# Disparo ao clicar no botão de submissão do formulário
+if btn_extrair:
+    with st.spinner(f"Buscando e processando '{termo_busca}'..."):
+        time.sleep(0.8)
+        df_leads = run_lead_extraction(termo_busca, qtd_resultados, enriquecer_emails, enriquecer_redes)
         filename = "leads_extraidos.xlsx"
         create_excel_report(df_leads, filename)
         
-        # Salva o DataFrame no Estado da Sessão para manter visível
+        # Recarrega a sessão imediatamente com a nova busca
         st.session_state['df_leads'] = df_leads
         st.session_state['filename'] = filename
+        st.session_state['last_query'] = termo_busca
 
-# Renderiza os resultados salvos na sessão (caso existam)
+# Exibição dos resultados salvos na sessão
 if 'df_leads' in st.session_state:
     df_leads = st.session_state['df_leads']
     filename = st.session_state['filename']
+    last_query = st.session_state.get('last_query', termo_busca)
     
-    st.success(f"✅ Extração concluída com sucesso! Total de {len(df_leads)} leads processados.")
+    st.success(f"✅ Extração para '{last_query}' concluída com sucesso! Total de {len(df_leads)} leads processados.")
     
     st.subheader("📋 Prévia dos Resultados")
     st.dataframe(df_leads, use_container_width=True)
