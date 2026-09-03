@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from playwright.sync_api import sync_playwright
 import time
+import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Scraper B2B Cloud", page_icon="📍", layout="wide")
@@ -56,19 +57,46 @@ def scrape_maps_cloud(keyword: str, max_results: int, token: str):
         
         for card in cards:
             try:
-                nome = card.get_attribute("aria-label") or "N/A"
-                link_elem = card.query_selector('a')
+                # 1. Captura o Nome da Empresa (tentativa por classe de título ou aria-label)
+                nome = card.get_attribute("aria-label")
+                if not nome:
+                    title_elem = card.query_selector('.qBF1Pd, div.fontHeadlineSmall')
+                    nome = title_elem.inner_text().strip() if title_elem else "N/A"
+
+                # 2. Captura a URL do Google Maps
+                link_elem = card.query_selector('a[href*="/maps/place/"]')
+                if not link_elem:
+                    link_elem = card.query_selector('a')
                 url_maps = link_elem.get_attribute('href') if link_elem else "N/A"
+
+                # 3. Organização das linhas de texto do card
+                lines = [line.strip() for line in card.inner_text().split("\n") if line.strip()]
                 
-                text_content = card.inner_text().split("\n")
-                categoria = text_content[1] if len(text_content) > 1 else "N/A"
-                detalhes = text_content[2] if len(text_content) > 2 else "N/A"
+                if nome == "N/A" and len(lines) > 0:
+                    nome = lines[0]
+
+                # Identifica a nota/avaliação (ex: 4.4(42) ou 5.0(28))
+                avaliacao = "N/A"
+                for line in lines:
+                    if re.search(r'^\d[\.,]\d\s*\(\d+\)', line):
+                        avaliacao = line
+                        break
+
+                # Filtra as linhas restantes para identificar Categoria e Endereço
+                content_lines = [
+                    l for l in lines 
+                    if l != nome and l != avaliacao and not l.startswith("Aberto") and not l.startswith("Fechado")
+                ]
+                
+                categoria = content_lines[0] if len(content_lines) > 0 else "N/A"
+                endereco = content_lines[1] if len(content_lines) > 1 else "N/A"
                 
                 results.append({
                     "Keyword": keyword,
                     "Nome da Empresa": nome,
+                    "Avaliação": avaliacao,
                     "Categoria": categoria,
-                    "Detalhes/Endereço": detalhes,
+                    "Endereço/Detalhes": endereco,
                     "URL Google Maps": url_maps
                 })
             except Exception:
