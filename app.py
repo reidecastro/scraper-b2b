@@ -18,7 +18,7 @@ st.markdown("Busque leads B2B por nicho/região e baixe a planilha formatada e p
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    keyword = st.text_input("Palavra-chave (Nicho + Região):", placeholder="Ex: Restaurantes em Campinas SP")
+    keyword = st.text_input("Palavra-chave (Nicho + Região):", placeholder="Ex: Restaurantes no Cambuí Campinas SP")
 
 with col2:
     max_results = st.number_input("Número máximo de resultados:", min_value=5, max_value=100, value=20, step=5)
@@ -32,13 +32,12 @@ def export_to_excel(df):
     ws = wb.active
     ws.title = "Leads B2B"
 
-    # Escreve os cabeçalhos
     headers = list(df.columns)
     ws.append(headers)
 
-    # Estilo da Linha 1 (Cabeçalho): Fonte 12, Negrito, Centralizado, Fundo Azul Escuro
+    # Estilo da Linha 1 (Cabeçalho): Fonte 12, Negrito, Centralizado, Fundo PRETO
     header_font = Font(name="Arial", size=12, bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+    header_fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
     header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     for col_num, header in enumerate(headers, 1):
@@ -47,11 +46,10 @@ def export_to_excel(df):
         cell.fill = header_fill
         cell.alignment = header_alignment
 
-    # Insere as linhas de dados
     for row in df.itertuples(index=False):
         ws.append(list(row))
 
-    # Regras de Dropdown (Validação de Dados)
+    # Dropdowns de Validação
     dv_status = DataValidation(type="list", formula1='"A Fazer,Ativo,Inativo"', allow_blank=True)
     dv_prog = DataValidation(type="list", formula1='"1º Contato,2º Contato,1ª Reunião,Orçamento,Contrato Finalizado"', allow_blank=True)
 
@@ -60,13 +58,13 @@ def export_to_excel(df):
 
     max_row = ws.max_row
     if max_row > 1:
-        # Coluna I (Status) e Coluna J (Progressão)
-        dv_status.add(f"I2:I{max_row}")
-        dv_prog.add(f"J2:J{max_row}")
+        # Coluna J (Status) e Coluna K (Progressão) com a inclusão de Categoria
+        dv_status.add(f"J2:J{max_row}")
+        dv_prog.add(f"K2:K{max_row}")
 
-    # Formatação de Links Clicáveis do Google Maps e Largura das Colunas
+    # Formatação de Link do Google Maps
     for row_idx in range(2, max_row + 1):
-        map_cell = ws.cell(row=row_idx, column=13)  # Coluna M: Link Google Maps
+        map_cell = ws.cell(row=row_idx, column=14)  # Coluna N: Link Google Maps
         if map_cell.value and str(map_cell.value).startswith("http"):
             url = str(map_cell.value)
             map_cell.value = "Ver no Google Maps"
@@ -83,32 +81,36 @@ def export_to_excel(df):
     output.seek(0)
     return output.getvalue()
 
-# --- HELPER: EXTRAÇÃO DE CONTATOS NO WEBSITE ---
+# --- EXTRAÇÃO PROFUNDA DE SITE ---
 def extract_contacts_from_website(context, website_url):
     emails = set()
     socials = set()
     
     try:
         page = context.new_page()
-        page.goto(website_url, timeout=10000, wait_until="domcontentloaded")
-        time.sleep(1)
+        # Define User-Agent de navegador comum para evitar bloqueios em sites de restaurantes
+        page.set_extra_http_headers({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
         
-        # Pega todo o HTML/texto da página
+        page.goto(website_url, timeout=12000, wait_until="domcontentloaded")
+        time.sleep(1.5)
+        
         html_content = page.content()
         
-        # Expressão regular para achar e-mails válidos
+        # Expressão regular para e-mails
         found_emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html_content)
         for e in found_emails:
-            if not any(ext in e.lower() for ext in ['.png', '.jpg', '.jpeg', '.webp', '.svg', 'wixpress', 'sentry']):
+            if not any(ext in e.lower() for ext in ['.png', '.jpg', '.jpeg', '.webp', '.svg', 'wixpress', 'sentry', 'domain']):
                 emails.add(e.lower())
 
-        # Procura links de redes sociais
+        # Procura links sociais no rodapé/cabeçalho
         links = page.query_selector_all('a[href]')
         for link in links:
             href = link.get_attribute('href') or ""
-            if any(domain in href.lower() for domain in ['instagram.com', 'facebook.com', 'linkedin.com', 'twitter.com', 'x.com']):
+            if any(domain in href.lower() for domain in ['instagram.com', 'facebook.com', 'linkedin.com', 'twitter.com']):
                 clean_link = href.split('?')[0].rstrip('/')
-                if len(clean_link) > 15:
+                if len(clean_link) > 15 and not clean_link.endswith(('instagram.com', 'facebook.com', 'linkedin.com')):
                     socials.add(clean_link)
 
         page.close()
@@ -119,7 +121,7 @@ def extract_contacts_from_website(context, website_url):
     social_str = ", ".join(list(socials)[:3]) if socials else ""
     return email_str, social_str
 
-# --- FUNÇÃO DE SCRAPING NA NUVEM ---
+# --- SCRAPING AVANÇADO DO GOOGLE MAPS ---
 def scrape_maps_cloud(keyword: str, max_results: int, token: str, do_deep_scrape: bool):
     results = []
     wss_url = f"wss://chrome.browserless.io?token={token}"
@@ -133,7 +135,7 @@ def scrape_maps_cloud(keyword: str, max_results: int, token: str, do_deep_scrape
         page.goto(search_url, wait_until="domcontentloaded")
         
         try:
-            page.wait_for_selector('div[role="feed"]', timeout=12000)
+            page.wait_for_selector('div[role="feed"]', timeout=15000)
         except Exception:
             browser.close()
             return pd.DataFrame()
@@ -141,15 +143,11 @@ def scrape_maps_cloud(keyword: str, max_results: int, token: str, do_deep_scrape
         scrollable_div = 'div[role="feed"]'
         previous_count = 0
         
+        # Rolagem para carregar a quantidade desejada de cards
         while len(results) < max_results:
             cards = page.query_selector_all('div[role="article"]')
-            
-            if len(cards) == previous_count and len(cards) > 0:
-                time.sleep(2)
-                cards = page.query_selector_all('div[role="article"]')
-                if len(cards) == previous_count:
-                    break
-                    
+            if len(cards) >= max_results or (len(cards) == previous_count and len(cards) > 0):
+                break
             previous_count = len(cards)
             page.evaluate('(selector) => { const el = document.querySelector(selector); if (el) el.scrollBy(0, 1000); }', scrollable_div)
             time.sleep(1.5)
@@ -158,6 +156,10 @@ def scrape_maps_cloud(keyword: str, max_results: int, token: str, do_deep_scrape
         
         for card in cards:
             try:
+                # Clica no card para abrir o painel detalhado do restaurante
+                card.click()
+                time.sleep(1.2)
+                
                 # 1. Nome da Empresa
                 nome = card.get_attribute("aria-label")
                 if not nome:
@@ -166,50 +168,51 @@ def scrape_maps_cloud(keyword: str, max_results: int, token: str, do_deep_scrape
 
                 # 2. Link do Google Maps
                 link_elem = card.query_selector('a[href*="/maps/place/"]')
-                if not link_elem:
-                    link_elem = card.query_selector('a')
                 url_maps = link_elem.get_attribute('href') if link_elem else ""
 
-                # 3. Linhas internas do card
+                # 3. Tratamento e separação da Categoria e Endereço
                 lines = [line.strip() for line in card.inner_text().split("\n") if line.strip()]
-                
-                if nome == "N/A" and len(lines) > 0:
-                    nome = lines[0]
-
+                categoria = ""
+                endereco = ""
                 telefone = ""
                 funcionamento = ""
-                endereco = ""
-                
+
                 for line in lines:
-                    if re.search(r'\(?\d{2}\)?\s*9?\d{4}[-\s]?\d{4}', line):
+                    # Se contém o separador '·' do Google Maps (ex: "Restaurant · R. dos Bandeirantes, 66")
+                    if '·' in line:
+                        parts = [p.strip() for p in line.split('·') if p.strip()]
+                        if len(parts) >= 2:
+                            categoria = parts[0]
+                            # A última parte costuma ser o endereço/rua
+                            endereco = parts[-1]
+                        elif len(parts) == 1:
+                            categoria = parts[0]
+                    elif re.search(r'\(?\d{2}\)?\s*9?\d{4}[-\s]?\d{4}', line):
                         telefone = line
-                    elif any(w in line.lower() for w in ["aberto", "fechado", "fecha às", "abre às", "24 horas"]):
+                    elif any(w in line.lower() for w in ["aberto", "fechado", "fecha", "abre", "24 horas"]):
                         funcionamento = line
                     elif any(w in line.lower() for w in ["rua", "r.", "av.", "avenida", "alameda", "praça", "bairro", "jd.", "jardim", "sp", "campinas"]):
-                        if line != nome and not re.search(r'^\d[\.,]\d\s*\(\d+\)', line):
+                        if line != nome and not re.search(r'^\d[\.,]\d', line):
                             endereco = line
 
-                if not endereco:
-                    content_lines = [
-                        l for l in lines 
-                        if l != nome 
-                        and not re.search(r'^\d[\.,]\d\s*\(\d+\)', l) 
-                        and not any(w in l.lower() for w in ["aberto", "fechado", "fecha", "abre"]) 
-                        and l != telefone
-                    ]
-                    if len(content_lines) > 1:
-                        endereco = content_lines[1]
-                    elif len(content_lines) > 0:
-                        endereco = content_lines[0]
-
-                whatsapp = telefone if ("9" in telefone and len(re.sub(r'\D', '', telefone)) >= 10) else ""
+                # 4. Captura do Website (procura no card e no painel de detalhes aberto)
+                website_url = ""
                 
-                # Checa presença de Website (Coluna L)
-                website_elem = card.query_selector('a[href*="http"]:not([href*="google.com"])')
-                website_url = website_elem.get_attribute('href') if website_elem else ""
-                tem_website = "Sim" if website_url else "Não"
+                # Tentativa A: Botão oficial de Website do painel do Google Maps
+                web_btn = page.query_selector('a[data-item-id="authority"], a[aria-label*="website"], a[aria-label*="Website"]')
+                if web_btn:
+                    website_url = web_btn.get_attribute('href') or ""
 
-                # Extrai Email e Redes Sociais acessando o site do lead se ativado
+                # Tentativa B: Links de "Pedir Online" / Reserva / Menu se não achar site direto
+                if not website_url:
+                    order_btn = page.query_selector('a[href*="http"]:not([href*="google.com"]):not([href*="ggpht"])')
+                    if order_btn:
+                        website_url = order_btn.get_attribute('href') or ""
+
+                tem_website = "Sim" if website_url else "Não"
+                whatsapp = telefone if ("9" in telefone and len(re.sub(r'\D', '', telefone)) >= 10) else ""
+
+                # 5. Acessa o site para extrair E-mail e Redes Sociais
                 email_extraido = ""
                 redes_sociais_extraidas = ""
                 
@@ -219,6 +222,7 @@ def scrape_maps_cloud(keyword: str, max_results: int, token: str, do_deep_scrape
                 results.append({
                     "Prompt": keyword,
                     "Nome da Empresa": nome,
+                    "Categoria": categoria,
                     "Responsável": "",
                     "Endereço": endereco,
                     "Telefone": telefone,
