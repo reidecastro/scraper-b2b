@@ -44,7 +44,6 @@ def clean_and_format_phone(phone_str):
     
     digits = re.sub(r'\D', '', str(phone_str))
     
-    # Descarta números genéricos/placeholders
     if digits in ["2000000000", "0000000000", "1234567890"] or len(digits) < 8:
         return "", ""
     
@@ -113,20 +112,17 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
             col_name = columns[c_idx - 1]
             val_str = "" if pd.isna(val) or val is None else str(val)
             
-            # Hiperlinks com fórmula nativa =HYPERLINK() para clique direto (sem necessidade de CTRL)
+            # Hiperlinks Formatados para Acesso Direto
             if col_name == "Link Google Maps" and val_str and val_str.startswith("http"):
                 cell.value = f'=HYPERLINK("{val_str}", "Ver no Google Maps")'
-                cell.hyperlink = val_str
                 cell.font = link_font
                 cell.alignment = align_center
             elif col_name == "Whatsapp" and val_str and val_str.startswith("http"):
                 cell.value = f'=HYPERLINK("{val_str}", "Abrir WhatsApp")'
-                cell.hyperlink = val_str
                 cell.font = link_font
                 cell.alignment = align_center
             elif col_name == "Redes Sociais" and val_str and val_str.startswith("http"):
                 cell.value = f'=HYPERLINK("{val_str}", "Acessar Perfil")'
-                cell.hyperlink = val_str
                 cell.font = link_font
                 cell.alignment = align_center
             elif col_name in ["Status", "Progressão", "Tem Website"]:
@@ -143,12 +139,10 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
         col_letter = get_column_letter(col[0].column)
         for cell in col:
             val = str(cell.value or '')
-            if cell.hyperlink:
-                val = cell.value or ''
             max_len = max(max_len, len(val))
-        ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+        ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
         
-    # Listas Dropdown (Validação de Dados) para Status e Progressão
+    # Dropdowns (Validação de Dados)
     if "Status" in columns:
         status_col_idx = columns.index("Status") + 1
         col_letter = get_column_letter(status_col_idx)
@@ -167,7 +161,7 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb.save(filename)
     return filename
 
-# Função Principal de Extração (Motor de Scraping intacto)
+# Função Principal de Extração
 def run_lead_extraction(prompt_query, max_results=20):
     base_leads = [
         {"nome": "Felicita", "cat": "Restaurante de Pizza", "end": "Av. Dr. Alberto Sarmento, 1009 - Castelo", "tel": "1932412233", "web": "Não", "gmaps": "https://maps.google.com/?q=Felicita+Castelo+Campinas"},
@@ -193,7 +187,6 @@ def run_lead_extraction(prompt_query, max_results=20):
     ]
     
     extracted_data = []
-    
     for item in base_leads[:max_results]:
         phone_fmt, wa_link = clean_and_format_phone(item["tel"])
         
@@ -217,22 +210,28 @@ def run_lead_extraction(prompt_query, max_results=20):
         
     return pd.DataFrame(extracted_data)
 
-# Botão de Ação e Execução
+# Botão de Execução
 if st.button("🚀 Iniciar Extração de Leads"):
     with st.spinner("Buscando e processando estabelecimentos no Google Maps..."):
         time.sleep(1.0)
         df_leads = run_lead_extraction(termo_busca, qtd_resultados)
-        
         filename = "leads_extraidos.xlsx"
         create_excel_report(df_leads, filename)
         
+        # Salva o DataFrame no Estado da Sessão para manter visível
+        st.session_state['df_leads'] = df_leads
+        st.session_state['filename'] = filename
+
+# Renderiza os resultados salvos na sessão (caso existam)
+if 'df_leads' in st.session_state:
+    df_leads = st.session_state['df_leads']
+    filename = st.session_state['filename']
+    
     st.success(f"✅ Extração concluída com sucesso! Total de {len(df_leads)} leads processados.")
     
-    # Exibição da Tabela Completa
     st.subheader("📋 Prévia dos Resultados")
     st.dataframe(df_leads, use_container_width=True)
     
-    # Botão de Download
     with open(filename, "rb") as file:
         st.download_button(
             label="📥 Baixar Planilha Excel (.xlsx)",
