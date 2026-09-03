@@ -21,7 +21,6 @@ with col2:
 # --- FUNÇÃO DE SCRAPING NA NUVEM ---
 def scrape_maps_cloud(keyword: str, max_results: int, token: str):
     results = []
-    # Conexão remota com o navegador em nuvem do Browserless.io
     wss_url = f"wss://chrome.browserless.io?token={token}"
     
     with sync_playwright() as p:
@@ -43,7 +42,6 @@ def scrape_maps_cloud(keyword: str, max_results: int, token: str):
         while len(results) < max_results:
             cards = page.query_selector_all('div[role="article"]')
             
-            # Condição de parada se não houver mais novos resultados
             if len(cards) == previous_count and len(cards) > 0:
                 time.sleep(2)
                 cards = page.query_selector_all('div[role="article"]')
@@ -51,8 +49,8 @@ def scrape_maps_cloud(keyword: str, max_results: int, token: str):
                     break
                     
             previous_count = len(cards)
-# A forma correta exige fechar o parêntese do querySelector e do scrollBy:
-page.evaluate(f'document.querySelector("{scrollable_div}").scrollBy(0, 1000);')            time.sleep(1.5)
+            page.evaluate('(selector) => { const el = document.querySelector(selector); if (el) el.scrollBy(0, 1000); }', scrollable_div)
+            time.sleep(1.5)
 
         cards = page.query_selector_all('div[role="article"]')[:max_results]
         
@@ -82,9 +80,8 @@ page.evaluate(f'document.querySelector("{scrollable_div}").scrollBy(0, 1000);') 
 
 # --- BOTÃO DE EXECUÇÃO ---
 if st.button("🚀 Iniciar Scraping", type="primary"):
-    # Busca a chave salva de forma segura nos Secrets do Streamlit Cloud
     if "BROWSERLESS_KEY" not in st.secrets or not st.secrets["BROWSERLESS_KEY"]:
-        st.error("Chave de API não configurada nos Secrets do Streamlit. Verifique as configurações da conta.")
+        st.error("Chave de API não configurada nos Secrets do Streamlit.")
     elif not keyword.strip():
         st.warning("Por favor, digite uma palavra-chave para realizar a busca.")
     else:
@@ -95,14 +92,10 @@ if st.button("🚀 Iniciar Scraping", type="primary"):
             
             if not df_results.empty:
                 st.success(f"Encontradas {len(df_results)} empresas com sucesso!")
-                
-                # Exibição dos resultados em tabela na tela
                 st.dataframe(df_results, use_container_width=True)
                 
-                # Conversão para CSV codificado para Excel
                 csv_data = df_results.to_csv(index=False, encoding="utf-8-sig")
                 
-                # Botão de download do CSV
                 st.download_button(
                     label="📥 Baixar Resultados em CSV",
                     data=csv_data,
@@ -110,4 +103,4 @@ if st.button("🚀 Iniciar Scraping", type="primary"):
                     mime="text/csv"
                 )
             else:
-                st.error("Não foi possível coletar os dados. Verifique se a palavra-chave é válida ou se o limite de créditos do Browserless foi atingido.")
+                st.error("Nenhum resultado encontrado ou o Google Maps demorou para responder. Tente uma palavra-chave mais ampla.")
