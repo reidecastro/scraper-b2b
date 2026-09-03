@@ -51,8 +51,8 @@ def scrape_maps_cloud(keyword: str, max_results: int, token: str):
                     break
                     
             previous_count = len(cards)
-            page.evaluate(f'document.querySelector("{scrollable_div}").scrollBy(0, 1000)')
-            time.sleep(1.5)
+# A forma correta exige fechar o parêntese do querySelector e do scrollBy:
+page.evaluate(f'document.querySelector("{scrollable_div}").scrollBy(0, 1000);')            time.sleep(1.5)
 
         cards = page.query_selector_all('div[role="article"]')[:max_results]
         
