@@ -107,7 +107,6 @@ def extract_contacts_from_website(context, website_url):
         for link in links:
             href = link.get_attribute('href') or ""
             if any(domain in href.lower() for domain in ['instagram.com', 'facebook.com', 'linkedin.com', 'twitter.com', 'x.com']):
-                # Remove parâmetros de rastreio inúteis do link
                 clean_link = href.split('?')[0].rstrip('/')
                 if len(clean_link) > 15:
                     socials.add(clean_link)
@@ -210,7 +209,7 @@ def scrape_maps_cloud(keyword: str, max_results: int, token: str, do_deep_scrape
                 website_url = website_elem.get_attribute('href') if website_elem else ""
                 tem_website = "Sim" if website_url else "Não"
 
-                # Se Tem Website == Sim e a opção de enriquecimento estiver ativa, acessa o site do lead!
+                # Extrai Email e Redes Sociais acessando o site do lead se ativado
                 email_extraido = ""
                 redes_sociais_extraidas = ""
                 
