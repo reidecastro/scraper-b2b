@@ -27,11 +27,11 @@ st.markdown("""
 st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Google Maps</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Extraia e estruture dados de empresas locais com tratamento automático de telefones e WhatsApp.</div>', unsafe_allow_html=True)
 
-# Sidebar - Configurações de Busca com o botão "Buscar" exclusivo abaixo do campo de texto
+# Sidebar - Configurações de Busca
 with st.sidebar:
     st.header("⚙️ Configurações da Busca")
     
-    # Formulário contendo o input do termo e o botão submit dedicado
+    # Form contendo o campo e o botão Buscar
     with st.form(key="search_input_form"):
         termo_busca = st.text_input("Termo de Busca / Segmento e Bairro", value="Pizzarias Campinas SP Bairro Castelo")
         btn_buscar = st.form_submit_button("Buscar", use_container_width=True)
@@ -209,19 +209,15 @@ def run_lead_extraction(prompt_query, max_results=20, email_opt=True, redes_opt=
         
     return pd.DataFrame(extracted_data)
 
-# Trata a submissão do formulário de busca isolado
-if btn_buscar:
-    st.toast(f"Busca atualizada para: '{termo_busca}'")
-
-# Disparo ao clicar no botão principal de extração
-if btn_extrair:
+# Disparo ao clicar no botão "Buscar" ou no botão "🚀 Iniciar Extração de Leads"
+if btn_buscar or btn_extrair:
     with st.spinner(f"Buscando e processando '{termo_busca}'..."):
         time.sleep(0.8)
         df_leads = run_lead_extraction(termo_busca, qtd_resultados, enriquecer_emails, enriquecer_redes)
         filename = "leads_extraidos.xlsx"
         create_excel_report(df_leads, filename)
         
-        # Recarrega a sessão imediatamente com a nova busca
+        # Salva na sessão
         st.session_state['df_leads'] = df_leads
         st.session_state['filename'] = filename
         st.session_state['last_query'] = termo_busca
