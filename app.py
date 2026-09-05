@@ -27,10 +27,15 @@ st.markdown("""
 st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Google Maps</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Extraia e estruture dados de empresas locais com tratamento automático de telefones e WhatsApp.</div>', unsafe_allow_html=True)
 
-# Sidebar - Configurações dentro de Formulário para captura imediata dos inputs
-with st.sidebar.form(key="search_form"):
+# Sidebar - Configurações de Busca com o botão "Buscar" exclusivo abaixo do campo de texto
+with st.sidebar:
     st.header("⚙️ Configurações da Busca")
-    termo_busca = st.text_input("Termo de Busca / Segmento e Bairro", value="Pizzarias Campinas SP Bairro Castelo")
+    
+    # Formulário contendo o input do termo e o botão submit dedicado
+    with st.form(key="search_input_form"):
+        termo_busca = st.text_input("Termo de Busca / Segmento e Bairro", value="Pizzarias Campinas SP Bairro Castelo")
+        btn_buscar = st.form_submit_button("Buscar", use_container_width=True)
+
     qtd_resultados = st.number_input("Quantidade de Resultados", min_value=1, max_value=100, value=20, step=1)
 
     st.markdown("---")
@@ -38,8 +43,8 @@ with st.sidebar.form(key="search_form"):
     enriquecer_emails = st.checkbox("Buscar E-mails nas Páginas", value=True)
     enriquecer_redes = st.checkbox("Buscar Redes Sociais (Instagram/FB)", value=True)
     
-    # O botão dentro do formulário envia o texto atualizado sem solicitar Enter
-    btn_extrair = st.form_submit_button("🚀 Iniciar Extração de Leads")
+    st.markdown("<br>", unsafe_allow_html=True)
+    btn_extrair = st.button("🚀 Iniciar Extração de Leads", use_container_width=True)
 
 # Higienização e Formatação de Telefones
 def clean_and_format_phone(phone_str):
@@ -204,7 +209,11 @@ def run_lead_extraction(prompt_query, max_results=20, email_opt=True, redes_opt=
         
     return pd.DataFrame(extracted_data)
 
-# Disparo ao clicar no botão de submissão do formulário
+# Trata a submissão do formulário de busca isolado
+if btn_buscar:
+    st.toast(f"Busca atualizada para: '{termo_busca}'")
+
+# Disparo ao clicar no botão principal de extração
 if btn_extrair:
     with st.spinner(f"Buscando e processando '{termo_busca}'..."):
         time.sleep(0.8)
