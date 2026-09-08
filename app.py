@@ -5,13 +5,13 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 import re
-import time
-import urllib.request
-from urllib.parse import quote_plus, unquote
+import requests
+from urllib.parse import quote_plus
+from googlesearch import search
 
 # Configuração da Página
 st.set_page_config(
-    page_title="Gerador de Leads B2B - Google Maps",
+    page_title="Gerador de Leads B2B - Busca Real",
     page_icon="🎯",
     layout="wide"
 )
@@ -26,22 +26,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Google Maps</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Extraia e estruture dados de empresas locais com tratamento automático de telefones e WhatsApp.</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Dados Reais</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Extraia e estruture dados reais de empresas locais sem uso de simulações ou custos.</div>', unsafe_allow_html=True)
 
 # Sidebar - Configurações de Busca
 with st.sidebar:
     st.header("⚙️ Configurações da Busca")
     
-    with st.form(key="search_input_form"):
-        termo_busca = st.text_input("Termo de Busca / Segmento e Bairro", value="Pizzarias Campinas SP Bairro Castelo")
-        btn_buscar = st.form_submit_button("Buscar", use_container_width=True)
-
-    qtd_resultados = st.number_input("Quantidade de Resultados", min_value=1, max_value=100, value=20, step=1)
+    termo_busca = st.text_input("Termo de Busca e Bairro", value="Pizzarias Campinas SP Bairro Castelo")
+    qtd_resultados = st.number_input("Quantidade de Resultados", min_value=1, max_value=20, value=10, step=1)
 
     st.markdown("---")
     st.header("🔍 Opções de Enriquecimento")
-    enriquecer_emails = st.checkbox("Buscar E-mails nas Páginas", value=True)
+    enriquecer_emails = st.checkbox("Buscar E-mails nos Sites", value=True)
     enriquecer_redes = st.checkbox("Buscar Redes Sociais (Instagram/FB)", value=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -51,58 +48,38 @@ with st.sidebar:
 def clean_and_format_phone(phone_str):
     if not phone_str or pd.isna(phone_str):
         return "", ""
-    
     digits = re.sub(r'\D', '', str(phone_str))
-    
-    if digits in ["2000000000", "0000000000", "1234567890"] or len(digits) < 8:
+    if len(digits) < 8:
         return "", ""
     
-    formatted_phone = ""
-    whatsapp = ""
-    
-    if len(digits) == 10:
-        formatted_phone = f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
-    elif len(digits) == 11:
-        formatted_phone = f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
-        if digits[2] == '9':
-            whatsapp = f"https://wa.me/55{digits}"
-    elif len(digits) == 8:
-        formatted_phone = f"(19) {digits[:4]}-{digits[4:]}"
-    elif len(digits) == 9:
-        formatted_phone = f"(19) {digits[:5]}-{digits[5:]}"
-        if digits[0] == '9':
-            whatsapp = f"https://wa.me/5519{digits}"
-    else:
-        formatted_phone = digits
-        
+    formatted_phone = phone_str
+    whatsapp = f"https://wa.me/55{digits}" if len(digits) in [10, 11] else ""
     return formatted_phone, whatsapp
 
-# Raspador leve sem dependência do BeautifulSoup
+# Scraping leve dentro dos sites reais encontrados
 def scrape_website_details(website_url):
     email = ""
     social = ""
-    if not website_url or not website_url.startswith("http"):
+    if not website_url or not str(website_url).startswith("http"):
         return email, social
 
     try:
-        req = urllib.request.Request(
-            website_url, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        )
-        with urllib.request.urlopen(req, timeout=5) as response:
-            html_text = response.read().decode('utf-8', errors='ignore')
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(website_url, headers=headers, timeout=4)
+        if response.status_code == 200:
+            text = response.text
             
-            # Regex para e-mails
-            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html_text)
+            # E-mail real via Regex
+            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
             if emails:
-                valid_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css'))]
+                valid_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css', '.svg'))]
                 if valid_emails:
                     email = valid_emails[0]
             
-            # Regex para perfis de redes sociais
-            social_links = re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', html_text)
-            if social_links:
-                social = social_links[0]
+            # Redes Sociais reais via Regex
+            socials = re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', text)
+            if socials:
+                social = socials[0]
     except Exception:
         pass
 
@@ -200,110 +177,80 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb.save(filename)
     return filename
 
-# Função Principal de Extração Real
-def run_lead_extraction(prompt_query, max_results=20, email_opt=True, redes_opt=True):
+# Extração de Dados Reais
+def run_real_extraction(query, max_results=10, email_opt=True, redes_opt=True):
     extracted_data = []
     
     try:
-        search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(prompt_query)}"
-        req = urllib.request.Request(
-            search_url, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        )
+        # Busca resultados de sites reais no Google usando a biblioteca googlesearch
+        urls = list(search(query, num_results=max_results, lang="pt"))
         
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode('utf-8', errors='ignore')
+        for url in urls:
+            # Filtra agregadores irrelevantes para focar em sites reais de empresas
+            if any(domain in url for domain in ["tripadvisor", "ifood", "nhandeara", "facebook.com", "instagram.com"]):
+                continue
             
-            # Captura URLs e títulos reais via regex
-            raw_results = re.findall(r'href="([^"]*uddg=[^"]*)"[^>]*>(.*?)</a>', html)
+            # Extrai o nome limpo do domínio
+            domain_name = url.split("//")[-1].split("/")[0].replace("www.", "")
+            company_name = domain_name.split(".")[0].capitalize()
             
-            for idx, (raw_link, raw_title) in enumerate(raw_results[:max_results]):
-                clean_title = re.sub(r'<[^>]+>', '', raw_title).strip()
-                
-                # Extrai a URL real decodificada
-                match_url = re.search(r'uddg=([^&]+)', raw_link)
-                real_url = unquote(match_url.group(1)) if match_url else ""
-                
-                gmaps_real_link = f"https://www.google.com/maps/search/{quote_plus(clean_title + ' ' + prompt_query)}"
-                
-                has_website = "Sim" if real_url and real_url.startswith("http") else "Não"
-                
-                real_email = ""
-                real_social = ""
-                
-                if real_url and (email_opt or redes_opt):
-                    found_email, found_social = scrape_website_details(real_url)
-                    if email_opt:
-                        real_email = found_email
-                    if redes_opt:
-                        real_social = found_social
-                
-                phone_fmt, wa_link = clean_and_format_phone("")
+            # Link oficial de busca direta no Google Maps para o nome da empresa
+            gmaps_link = f"https://www.google.com/maps/search/{quote_plus(company_name + ' ' + query)}"
+            
+            real_email = ""
+            real_social = ""
+            
+            if email_opt or redes_opt:
+                found_email, found_social = scrape_website_details(url)
+                if email_opt:
+                    real_email = found_email
+                if redes_opt:
+                    real_social = found_social
 
-                record = {
-                    "Prompt": prompt_query,
-                    "Nome da Empresa": clean_title[:60],
-                    "Categoria": "Empresa / Comércio Local",
-                    "Responsável": "",
-                    "Endereço": prompt_query,
-                    "Telefone": phone_fmt,
-                    "Whatsapp": wa_link,
-                    "Email": real_email,
-                    "Redes Sociais": real_social,
-                    "Status": "A Fazer",
-                    "Progressão": "1º Contato",
-                    "Tem Website": has_website,
-                    "Link Google Maps": gmaps_real_link,
-                    "Observações": ""
-                }
-                extracted_data.append(record)
-                
+            record = {
+                "Prompt": query,
+                "Nome da Empresa": company_name,
+                "Categoria": "Comércio Local / Empresa",
+                "Responsável": "",
+                "Endereço": query,
+                "Telefone": "",
+                "Whatsapp": "",
+                "Email": real_email,
+                "Redes Sociais": real_social,
+                "Status": "A Fazer",
+                "Progressão": "1º Contato",
+                "Tem Website": "Sim",
+                "Link Google Maps": gmaps_link,
+                "Observações": f"Site encontrado: {url}"
+            }
+            extracted_data.append(record)
+            
     except Exception:
         pass
 
-    # Fallback de prevenção
-    if not extracted_data:
-        for i in range(min(max_results, 5)):
-            gmaps_link = f"https://www.google.com/maps/search/{quote_plus(prompt_query)}"
-            extracted_data.append({
-                "Prompt": prompt_query,
-                "Nome da Empresa": f"Resultado {i+1} - {prompt_query}",
-                "Categoria": "Comércio Local",
-                "Responsável": "",
-                "Endereço": prompt_query,
-                "Telefone": "",
-                "Whatsapp": "",
-                "Email": "",
-                "Redes Sociais": "",
-                "Status": "A Fazer",
-                "Progressão": "1º Contato",
-                "Tem Website": "Não",
-                "Link Google Maps": gmaps_link,
-                "Observações": ""
-            })
-
     return pd.DataFrame(extracted_data)
 
-# Disparo ao clicar em Buscar ou Iniciar Extração
-if btn_buscar or btn_extrair:
-    with st.spinner(f"Buscando dados reais para '{termo_busca}'..."):
-        df_leads = run_lead_extraction(termo_busca, qtd_resultados, enriquecer_emails, enriquecer_redes)
-        filename = "leads_extraidos.xlsx"
-        create_excel_report(df_leads, filename)
+# Execução do Botão
+if btn_extrair:
+    with st.spinner(f"Extraindo empresas reais para '{termo_busca}'..."):
+        df_leads = run_real_extraction(termo_busca, qtd_resultados, enriquecer_emails, enriquecer_redes)
         
-        st.session_state['df_leads'] = df_leads
-        st.session_state['filename'] = filename
-        st.session_state['last_query'] = termo_busca
+        if not df_leads.empty:
+            filename = "leads_extraidos.xlsx"
+            create_excel_report(df_leads, filename)
+            
+            st.session_state['df_leads'] = df_leads
+            st.session_state['filename'] = filename
+            st.success(f"✅ Sucesso! Extraídos {len(df_leads)} leads reais.")
+        else:
+            st.error("Nenhum resultado foi encontrado para o termo pesquisado. Tente reformular a busca.")
 
-# Exibição dos resultados na tela
+# Exibição e Download
 if 'df_leads' in st.session_state:
     df_leads = st.session_state['df_leads']
     filename = st.session_state['filename']
-    last_query = st.session_state.get('last_query', termo_busca)
     
-    st.success(f"✅ Extração real para '{last_query}' concluída! Total de {len(df_leads)} leads processados.")
-    
-    st.subheader("📋 Prévia dos Resultados")
+    st.subheader("📋 Prévia dos Resultados Reais")
     st.dataframe(df_leads, use_container_width=True)
     
     with open(filename, "rb") as file:
