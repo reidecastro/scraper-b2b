@@ -8,7 +8,7 @@ import re
 import requests
 from urllib.parse import quote_plus
 
-# Chave Serper API embutida
+# Chave Serper API
 SERPER_API_KEY = "b7aa37b6091475c73a9bd6fdede31e0ab0c77df3"
 
 st.set_page_config(
@@ -26,8 +26,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Dados Locais Integrados</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Extração avançada via Google Places/Maps com captura de endereço, telefone e enriquecimento web.</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Correção de Contatos</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Extração otimizada de telefones, WhatsApp e e-mails com busca de fallback para negócios locais.</div>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("⚙️ Configurações da Busca")
@@ -46,12 +46,61 @@ def clean_and_format_phone(phone_str):
     if not phone_str or pd.isna(phone_str):
         return "", ""
     digits = re.sub(r'\D', '', str(phone_str))
-    if len(digits) < 8:
-        return phone_str, ""
     
-    formatted_phone = phone_str
+    # Se o número contiver código do país 55, remove para validar DDD local
+    if len(digits) > 11 and digits.startswith("55"):
+        digits = digits[2:]
+        
+    if len(digits) < 8:
+        return str(phone_str), ""
+    
+    formatted_phone = str(phone_str)
     whatsapp = f"https://wa.me/55{digits}" if len(digits) in [10, 11] else ""
     return formatted_phone, whatsapp
+
+# Busca secundária no Google caso o perfil do Places não entregue o telefone direto
+def fallback_search_phone_email(company_name, address, api_key):
+    phone = ""
+    email = ""
+    social = ""
+    
+    query = f"{company_name} {address} telefone contato email"
+    url = "https://google.serper.dev/search"
+    payload = {"q": query, "gl": "br", "hl": "pt-br", "num": 3}
+    headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
+    
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            text_block = ""
+            
+            # Une títulos e snippets para procurar telefone via Regex
+            for item in data.get("organic", []):
+                text_block += " " + item.get("title", "") + " " + item.get("snippet", "")
+                link = item.get("link", "")
+                if ("instagram.com" in link or "facebook.com" in link) and not social:
+                    social = link
+
+            # Regex para telefones fixos e móveis com DDD do Brasil
+            phone_matches = re.findall(r'(?:\(?\d{2}\)?\s*)?(?:9?\d{4}[-\s]?\d{4})', text_block)
+            if phone_matches:
+                for match in phone_matches:
+                    clean_m = re.sub(r'\D', '', match)
+                    if len(clean_m) in [10, 11]:
+                        phone = match
+                        break
+
+            # Regex para e-mails
+            email_matches = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text_block)
+            if email_matches:
+                valid_e = [e for e in email_matches if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css'))]
+                if valid_e:
+                    email = valid_e[0]
+    except Exception:
+        pass
+
+    return phone, email, social
 
 def scrape_website_details(website_url):
     email, social = "", ""
@@ -63,15 +112,11 @@ def scrape_website_details(website_url):
         response = requests.get(website_url, headers=headers, timeout=4)
         if response.status_code == 200:
             text = response.text
-            
-            # Busca e-mails no código fonte do site
             emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
             if emails:
                 valid_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css', '.svg'))]
                 if valid_emails:
                     email = valid_emails[0]
-                    
-            # Busca redes sociais no código fonte do site
             socials = re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', text)
             if socials:
                 social = socials[0]
@@ -174,17 +219,9 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
 def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_opt=True):
     extracted_data = []
     
-    # Endpoint de Places para extração direta do Google Maps
     url = "https://google.serper.dev/places"
-    payload = {
-        "q": query,
-        "gl": "br",
-        "hl": "pt-br"
-    }
-    headers = {
-        'X-API-KEY': api_key,
-        'Content-Type': 'application/json'
-    }
+    payload = {"q": query, "gl": "br", "hl": "pt-br"}
+    headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
@@ -194,13 +231,14 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
         for item in places[:max_results]:
             company_name = item.get("title", "")
             address = item.get("address", "")
-            phone_raw = item.get("phoneNumber", "")
+            
+            # Mapeamento duplo para chave de telefone no JSON da API
+            phone_raw = item.get("phoneNumber") or item.get("phone") or ""
             category = item.get("category", "Comércio Local / Empresa")
             rating = item.get("rating", "")
             rating_count = item.get("ratingCount", "")
             website_url = item.get("website", "")
             
-            # Link para o perfil no Maps
             latitude = item.get("latitude", "")
             longitude = item.get("longitude", "")
             if latitude and longitude:
@@ -208,17 +246,26 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
             else:
                 gmaps_link = f"https://www.google.com/maps/search/{quote_plus(company_name + ' ' + address)}"
             
-            # Formatação de telefone e link de WhatsApp
-            formatted_phone, wa_link = clean_and_format_phone(phone_raw)
+            real_email = ""
+            real_social = ""
             
-            real_email, real_social = "", ""
-            has_website = "Não"
-            
+            # Se não veio site oficial, tenta extrair do site
             if website_url:
-                has_website = "Sim"
                 if email_opt or redes_opt:
                     real_email, real_social = scrape_website_details(website_url)
             
+            # Se o telefone ou e-mail continuam em branco, executa a busca de fallback
+            if not phone_raw or not real_email:
+                fb_phone, fb_email, fb_social = fallback_search_phone_email(company_name, address, api_key)
+                if not phone_raw and fb_phone:
+                    phone_raw = fb_phone
+                if not real_email and fb_email:
+                    real_email = fb_email
+                if not real_social and fb_social:
+                    real_social = fb_social
+
+            formatted_phone, wa_link = clean_and_format_phone(phone_raw)
+
             extracted_data.append({
                 "Prompt": query,
                 "Nome da Empresa": company_name,
@@ -233,18 +280,18 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
                 "Total Avaliações": rating_count,
                 "Status": "A Fazer",
                 "Progressão": "1º Contato",
-                "Tem Website": has_website,
+                "Tem Website": "Sim" if website_url else "Não",
                 "Link Google Maps": gmaps_link,
-                "Observações": f"Site Oficial: {website_url}" if website_url else "Sem site oficial"
+                "Observações": f"Site: {website_url}" if website_url else "Sem site oficial"
             })
             
     except Exception as e:
-        st.error(f"Erro na requisição de dados locais: {e}")
+        st.error(f"Erro na requisição: {e}")
 
     return pd.DataFrame(extracted_data)
 
 if btn_extrair:
-    with st.spinner(f"Buscando estabelecimentos reais e dados do Google Maps para '{termo_busca}'..."):
+    with st.spinner(f"Extraindo dados e buscando telefones/WhatsApp para '{termo_busca}'..."):
         df_leads = run_places_extraction(termo_busca, SERPER_API_KEY, qtd_resultados, enriquecer_emails, enriquecer_redes)
         
         if not df_leads.empty:
@@ -253,9 +300,9 @@ if btn_extrair:
             
             st.session_state['df_leads'] = df_leads
             st.session_state['filename'] = filename
-            st.success(f"✅ Sucesso! {len(df_leads)} empresas locais extraídas com dados completos.")
+            st.success(f"✅ Sucesso! {len(df_leads)} empresas extraídas com contatos.")
         else:
-            st.warning("Nenhum resultado retornado para a busca realizada. Tente ajustar o termo de pesquisa.")
+            st.warning("Nenhum resultado encontrado. Tente ajustar o termo de pesquisa.")
 
 if 'df_leads' in st.session_state:
     df_leads = st.session_state['df_leads']
