@@ -7,16 +7,16 @@ from openpyxl.worksheet.datavalidation import DataValidation
 import re
 import requests
 from urllib.parse import quote_plus
-from duckduckgo_search import DDGS
 
-# Configuração da Página
+# Chave Serper API embutida diretamente
+SERPER_API_KEY = "b7aa37b6091475c73a9bd6fdede31e0ab0c77df3"
+
 st.set_page_config(
     page_title="Gerador de Leads B2B - Dados Reais",
     page_icon="🎯",
     layout="wide"
 )
 
-# Estilização CSS personalizada
 st.markdown("""
 <style>
     .main-header { font-size: 2.2rem; color: #1E3A8A; font-weight: 700; margin-bottom: 0.5rem; }
@@ -27,12 +27,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Dados Reais</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Extraia e estruture dados reais de empresas locais sem uso de simulações ou custos.</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Extração direta de dados reais de empresas sem necessidade de configurações manuais.</div>', unsafe_allow_html=True)
 
-# Sidebar - Configurações de Busca
 with st.sidebar:
     st.header("⚙️ Configurações da Busca")
-    
     termo_busca = st.text_input("Termo de Busca e Bairro", value="Pizzarias Campinas SP Bairro Castelo")
     qtd_resultados = st.number_input("Quantidade de Resultados", min_value=1, max_value=20, value=10, step=1)
 
@@ -44,39 +42,21 @@ with st.sidebar:
     st.markdown("<br>", unsafe_allow_html=True)
     btn_extrair = st.button("🚀 Iniciar Extração de Leads", use_container_width=True)
 
-# Higienização e Formatação de Telefones
-def clean_and_format_phone(phone_str):
-    if not phone_str or pd.isna(phone_str):
-        return "", ""
-    digits = re.sub(r'\D', '', str(phone_str))
-    if len(digits) < 8:
-        return "", ""
-    
-    formatted_phone = phone_str
-    whatsapp = f"https://wa.me/55{digits}" if len(digits) in [10, 11] else ""
-    return formatted_phone, whatsapp
-
-# Scraping leve dentro dos sites reais encontrados
 def scrape_website_details(website_url):
-    email = ""
-    social = ""
+    email, social = "", ""
     if not website_url or not str(website_url).startswith("http"):
         return email, social
 
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         response = requests.get(website_url, headers=headers, timeout=4)
         if response.status_code == 200:
             text = response.text
-            
-            # E-mail real via Regex
             emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
             if emails:
                 valid_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css', '.svg'))]
                 if valid_emails:
                     email = valid_emails[0]
-            
-            # Redes Sociais reais via Regex
             socials = re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', text)
             if socials:
                 social = socials[0]
@@ -85,7 +65,6 @@ def scrape_website_details(website_url):
 
     return email, social
 
-# Gerador de Excel Profissional com OpenPyXL
 def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -177,66 +156,66 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb.save(filename)
     return filename
 
-# Extração de Dados Reais via DuckDuckGo API (Bypassa bloqueios de IP)
-def run_real_extraction(query, max_results=10, email_opt=True, redes_opt=True):
+def run_serper_extraction(query, api_key, max_results=10, email_opt=True, redes_opt=True):
     extracted_data = []
     
+    url = "https://google.serper.dev/search"
+    payload = {
+        "q": query,
+        "gl": "br",
+        "hl": "pt-br",
+        "num": max_results
+    }
+    headers = {
+        'X-API-KEY': api_key,
+        'Content-Type': 'application/json'
+    }
+    
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, region="br-pt", max_results=max_results * 2))
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        data = response.json()
+        
+        organic = data.get("organic", [])
+        for item in organic:
+            site_url = item.get("link", "")
+            title = item.get("title", "")
+            snippet = item.get("snippet", "")
             
-            for item in results:
-                if len(extracted_data) >= max_results:
-                    break
-                    
-                url = item.get("href", "")
-                title = item.get("title", "")
+            if any(domain in site_url for domain in ["facebook.com", "instagram.com", "tripadvisor", "ifood"]):
+                continue
                 
-                # Ignora diretórios e portais genéricos
-                if any(domain in url for domain in ["tripadvisor", "ifood", "facebook.com", "instagram.com", "apontador", "guiamais"]):
-                    continue
-                
-                # Extrai nome da empresa do título ou do domínio
-                company_name = title.split("-")[0].split("|")[0].strip()
-                gmaps_link = f"https://www.google.com/maps/search/{quote_plus(company_name + ' ' + query)}"
-                
-                real_email = ""
-                real_social = ""
-                
-                if email_opt or redes_opt:
-                    found_email, found_social = scrape_website_details(url)
-                    if email_opt:
-                        real_email = found_email
-                    if redes_opt:
-                        real_social = found_social
-
-                record = {
-                    "Prompt": query,
-                    "Nome da Empresa": company_name[:60],
-                    "Categoria": "Comércio Local / Empresa",
-                    "Responsável": "",
-                    "Endereço": query,
-                    "Telefone": "",
-                    "Whatsapp": "",
-                    "Email": real_email,
-                    "Redes Sociais": real_social,
-                    "Status": "A Fazer",
-                    "Progressão": "1º Contato",
-                    "Tem Website": "Sim",
-                    "Link Google Maps": gmaps_link,
-                    "Observações": f"Site: {url}"
-                }
-                extracted_data.append(record)
+            company_name = title.split("-")[0].split("|")[0].strip()
+            gmaps_link = f"https://www.google.com/maps/search/{quote_plus(company_name + ' ' + query)}"
+            
+            real_email, real_social = "", ""
+            if email_opt or redes_opt:
+                real_email, real_social = scrape_website_details(site_url)
+            
+            extracted_data.append({
+                "Prompt": query,
+                "Nome da Empresa": company_name[:60],
+                "Categoria": "Comércio Local / Empresa",
+                "Responsável": "",
+                "Endereço": query,
+                "Telefone": "",
+                "Whatsapp": "",
+                "Email": real_email,
+                "Redes Sociais": real_social,
+                "Status": "A Fazer",
+                "Progressão": "1º Contato",
+                "Tem Website": "Sim",
+                "Link Google Maps": gmaps_link,
+                "Observações": snippet[:100]
+            })
             
     except Exception as e:
-        st.error(f"Erro no mecanismo de busca: {e}")
+        st.error(f"Erro na requisição da API: {e}")
 
     return pd.DataFrame(extracted_data)
 
-# Execução do Botão
 if btn_extrair:
-    with st.spinner(f"Extraindo empresas reais para '{termo_busca}'..."):
-        df_leads = run_real_extraction(termo_busca, qtd_resultados, enriquecer_emails, enriquecer_redes)
+    with st.spinner(f"Extraindo leads para '{termo_busca}'..."):
+        df_leads = run_serper_extraction(termo_busca, SERPER_API_KEY, qtd_resultados, enriquecer_emails, enriquecer_redes)
         
         if not df_leads.empty:
             filename = "leads_extraidos.xlsx"
@@ -244,11 +223,10 @@ if btn_extrair:
             
             st.session_state['df_leads'] = df_leads
             st.session_state['filename'] = filename
-            st.success(f"✅ Sucesso! Extraídos {len(df_leads)} leads reais.")
+            st.success(f"✅ Sucesso! {len(df_leads)} empresas encontradas.")
         else:
-            st.warning("Nenhum resultado foi encontrado para o termo pesquisado. Tente reformular a busca.")
+            st.warning("Nenhum resultado retornado para a busca realizada.")
 
-# Exibição e Download
 if 'df_leads' in st.session_state:
     df_leads = st.session_state['df_leads']
     filename = st.session_state['filename']
