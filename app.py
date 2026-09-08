@@ -6,9 +6,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 import re
 import time
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import quote_plus
+import urllib.request
+from urllib.parse import quote_plus, unquote
 
 # Configuração da Página
 st.set_page_config(
@@ -78,7 +77,7 @@ def clean_and_format_phone(phone_str):
         
     return formatted_phone, whatsapp
 
-# Raspador Web para extração de e-mail e rede social reais dentro do site do lead
+# Raspador leve sem dependência do BeautifulSoup
 def scrape_website_details(website_url):
     email = ""
     social = ""
@@ -86,25 +85,24 @@ def scrape_website_details(website_url):
         return email, social
 
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        resp = requests.get(website_url, headers=headers, timeout=5)
-        if resp.status_code == 200:
-            text = resp.text
-            # Busca e-mail real via regex
-            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+        req = urllib.request.Request(
+            website_url, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            html_text = response.read().decode('utf-8', errors='ignore')
+            
+            # Regex para e-mails
+            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html_text)
             if emails:
-                # Ignora extensões de imagem comuns capturadas por equívoco
-                valid_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js'))]
+                valid_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css'))]
                 if valid_emails:
                     email = valid_emails[0]
             
-            # Busca link real de Instagram/Facebook
-            soup = BeautifulSoup(text, 'html.parser')
-            for a in soup.find_all('a', href=True):
-                href = a['href']
-                if 'instagram.com' in href or 'facebook.com' in href:
-                    social = href
-                    break
+            # Regex para perfis de redes sociais
+            social_links = re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', html_text)
+            if social_links:
+                social = social_links[0]
     except Exception:
         pass
 
@@ -202,68 +200,68 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb.save(filename)
     return filename
 
-# Função Principal de Extração Real via Busca Web
+# Função Principal de Extração Real
 def run_lead_extraction(prompt_query, max_results=20, email_opt=True, redes_opt=True):
     extracted_data = []
     
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    
-    # Executa busca real no motor de busca
-    search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(prompt_query)}"
-    
     try:
-        response = requests.get(search_url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        results = soup.find_all('a', class_='result__url', limit=max_results)
+        search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(prompt_query)}"
+        req = urllib.request.Request(
+            search_url, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
         
-        for idx, res in enumerate(results):
-            raw_url = res.get('href', '')
-            title_tag = res.find_parent('div', class_='result__body')
-            title = title_tag.find('a', class_='result__snippet').text.strip() if title_tag and title_tag.find('a', class_='result__snippet') else f"Lead {idx+1}"
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode('utf-8', errors='ignore')
             
-            # Gera o link real do Google Maps para a empresa/termo
-            gmaps_real_link = f"https://www.google.com/maps/search/{quote_plus(title + ' ' + prompt_query)}"
+            # Captura URLs e títulos reais via regex
+            raw_results = re.findall(r'href="([^"]*uddg=[^"]*)"[^>]*>(.*?)</a>', html)
             
-            # Formatação de site e busca de e-mail e rede social reais
-            website = raw_url if raw_url.startswith("http") else f"https://{raw_url}" if raw_url else ""
-            has_website = "Sim" if website else "Não"
-            
-            real_email = ""
-            real_social = ""
-            
-            if website and (email_opt or redes_opt):
-                found_email, found_social = scrape_website_details(website)
-                if email_opt:
-                    real_email = found_email
-                if redes_opt:
-                    real_social = found_social
-            
-            phone_fmt, wa_link = clean_and_format_phone("")
+            for idx, (raw_link, raw_title) in enumerate(raw_results[:max_results]):
+                clean_title = re.sub(r'<[^>]+>', '', raw_title).strip()
+                
+                # Extrai a URL real decodificada
+                match_url = re.search(r'uddg=([^&]+)', raw_link)
+                real_url = unquote(match_url.group(1)) if match_url else ""
+                
+                gmaps_real_link = f"https://www.google.com/maps/search/{quote_plus(clean_title + ' ' + prompt_query)}"
+                
+                has_website = "Sim" if real_url and real_url.startswith("http") else "Não"
+                
+                real_email = ""
+                real_social = ""
+                
+                if real_url and (email_opt or redes_opt):
+                    found_email, found_social = scrape_website_details(real_url)
+                    if email_opt:
+                        real_email = found_email
+                    if redes_opt:
+                        real_social = found_social
+                
+                phone_fmt, wa_link = clean_and_format_phone("")
 
-            record = {
-                "Prompt": prompt_query,
-                "Nome da Empresa": title[:60],
-                "Categoria": "Empresa / Comércio Local",
-                "Responsável": "",
-                "Endereço": prompt_query,
-                "Telefone": phone_fmt,
-                "Whatsapp": wa_link,
-                "Email": real_email,
-                "Redes Sociais": real_social,
-                "Status": "A Fazer",
-                "Progressão": "1º Contato",
-                "Tem Website": has_website,
-                "Link Google Maps": gmaps_real_link,
-                "Observações": ""
-            }
-            extracted_data.append(record)
-            
+                record = {
+                    "Prompt": prompt_query,
+                    "Nome da Empresa": clean_title[:60],
+                    "Categoria": "Empresa / Comércio Local",
+                    "Responsável": "",
+                    "Endereço": prompt_query,
+                    "Telefone": phone_fmt,
+                    "Whatsapp": wa_link,
+                    "Email": real_email,
+                    "Redes Sociais": real_social,
+                    "Status": "A Fazer",
+                    "Progressão": "1º Contato",
+                    "Tem Website": has_website,
+                    "Link Google Maps": gmaps_real_link,
+                    "Observações": ""
+                }
+                extracted_data.append(record)
+                
     except Exception:
         pass
 
-    # Caso a busca retorne vazia ou ocorra bloqueio, monta a lista limpa baseada no termo digitado
+    # Fallback de prevenção
     if not extracted_data:
         for i in range(min(max_results, 5)):
             gmaps_link = f"https://www.google.com/maps/search/{quote_plus(prompt_query)}"
