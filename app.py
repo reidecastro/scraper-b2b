@@ -7,11 +7,11 @@ from openpyxl.worksheet.datavalidation import DataValidation
 import re
 import requests
 from urllib.parse import quote_plus
-from googlesearch import search
+from duckduckgo_search import DDGS
 
 # Configuração da Página
 st.set_page_config(
-    page_title="Gerador de Leads B2B - Busca Real",
+    page_title="Gerador de Leads B2B - Dados Reais",
     page_icon="🎯",
     layout="wide"
 )
@@ -64,7 +64,7 @@ def scrape_website_details(website_url):
         return email, social
 
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         response = requests.get(website_url, headers=headers, timeout=4)
         if response.status_code == 200:
             text = response.text
@@ -177,56 +177,59 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb.save(filename)
     return filename
 
-# Extração de Dados Reais
+# Extração de Dados Reais via DuckDuckGo API (Bypassa bloqueios de IP)
 def run_real_extraction(query, max_results=10, email_opt=True, redes_opt=True):
     extracted_data = []
     
     try:
-        # Busca resultados de sites reais no Google usando a biblioteca googlesearch
-        urls = list(search(query, num_results=max_results, lang="pt"))
-        
-        for url in urls:
-            # Filtra agregadores irrelevantes para focar em sites reais de empresas
-            if any(domain in url for domain in ["tripadvisor", "ifood", "nhandeara", "facebook.com", "instagram.com"]):
-                continue
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, region="br-pt", max_results=max_results * 2))
             
-            # Extrai o nome limpo do domínio
-            domain_name = url.split("//")[-1].split("/")[0].replace("www.", "")
-            company_name = domain_name.split(".")[0].capitalize()
-            
-            # Link oficial de busca direta no Google Maps para o nome da empresa
-            gmaps_link = f"https://www.google.com/maps/search/{quote_plus(company_name + ' ' + query)}"
-            
-            real_email = ""
-            real_social = ""
-            
-            if email_opt or redes_opt:
-                found_email, found_social = scrape_website_details(url)
-                if email_opt:
-                    real_email = found_email
-                if redes_opt:
-                    real_social = found_social
+            for item in results:
+                if len(extracted_data) >= max_results:
+                    break
+                    
+                url = item.get("href", "")
+                title = item.get("title", "")
+                
+                # Ignora diretórios e portais genéricos
+                if any(domain in url for domain in ["tripadvisor", "ifood", "facebook.com", "instagram.com", "apontador", "guiamais"]):
+                    continue
+                
+                # Extrai nome da empresa do título ou do domínio
+                company_name = title.split("-")[0].split("|")[0].strip()
+                gmaps_link = f"https://www.google.com/maps/search/{quote_plus(company_name + ' ' + query)}"
+                
+                real_email = ""
+                real_social = ""
+                
+                if email_opt or redes_opt:
+                    found_email, found_social = scrape_website_details(url)
+                    if email_opt:
+                        real_email = found_email
+                    if redes_opt:
+                        real_social = found_social
 
-            record = {
-                "Prompt": query,
-                "Nome da Empresa": company_name,
-                "Categoria": "Comércio Local / Empresa",
-                "Responsável": "",
-                "Endereço": query,
-                "Telefone": "",
-                "Whatsapp": "",
-                "Email": real_email,
-                "Redes Sociais": real_social,
-                "Status": "A Fazer",
-                "Progressão": "1º Contato",
-                "Tem Website": "Sim",
-                "Link Google Maps": gmaps_link,
-                "Observações": f"Site encontrado: {url}"
-            }
-            extracted_data.append(record)
+                record = {
+                    "Prompt": query,
+                    "Nome da Empresa": company_name[:60],
+                    "Categoria": "Comércio Local / Empresa",
+                    "Responsável": "",
+                    "Endereço": query,
+                    "Telefone": "",
+                    "Whatsapp": "",
+                    "Email": real_email,
+                    "Redes Sociais": real_social,
+                    "Status": "A Fazer",
+                    "Progressão": "1º Contato",
+                    "Tem Website": "Sim",
+                    "Link Google Maps": gmaps_link,
+                    "Observações": f"Site: {url}"
+                }
+                extracted_data.append(record)
             
-    except Exception:
-        pass
+    except Exception as e:
+        st.error(f"Erro no mecanismo de busca: {e}")
 
     return pd.DataFrame(extracted_data)
 
@@ -243,7 +246,7 @@ if btn_extrair:
             st.session_state['filename'] = filename
             st.success(f"✅ Sucesso! Extraídos {len(df_leads)} leads reais.")
         else:
-            st.error("Nenhum resultado foi encontrado para o termo pesquisado. Tente reformular a busca.")
+            st.warning("Nenhum resultado foi encontrado para o termo pesquisado. Tente reformular a busca.")
 
 # Exibição e Download
 if 'df_leads' in st.session_state:
