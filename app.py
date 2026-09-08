@@ -8,7 +8,7 @@ import re
 import requests
 from urllib.parse import quote_plus
 
-# Chave Serper API embutida diretamente
+# Chave Serper API embutida
 SERPER_API_KEY = "b7aa37b6091475c73a9bd6fdede31e0ab0c77df3"
 
 st.set_page_config(
@@ -26,8 +26,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Dados Reais</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Extração direta de dados reais de empresas sem necessidade de configurações manuais.</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Dados Locais Integrados</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Extração avançada via Google Places/Maps com captura de endereço, telefone e enriquecimento web.</div>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("⚙️ Configurações da Busca")
@@ -42,6 +42,17 @@ with st.sidebar:
     st.markdown("<br>", unsafe_allow_html=True)
     btn_extrair = st.button("🚀 Iniciar Extração de Leads", use_container_width=True)
 
+def clean_and_format_phone(phone_str):
+    if not phone_str or pd.isna(phone_str):
+        return "", ""
+    digits = re.sub(r'\D', '', str(phone_str))
+    if len(digits) < 8:
+        return phone_str, ""
+    
+    formatted_phone = phone_str
+    whatsapp = f"https://wa.me/55{digits}" if len(digits) in [10, 11] else ""
+    return formatted_phone, whatsapp
+
 def scrape_website_details(website_url):
     email, social = "", ""
     if not website_url or not str(website_url).startswith("http"):
@@ -52,11 +63,15 @@ def scrape_website_details(website_url):
         response = requests.get(website_url, headers=headers, timeout=4)
         if response.status_code == 200:
             text = response.text
+            
+            # Busca e-mails no código fonte do site
             emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
             if emails:
                 valid_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css', '.svg'))]
                 if valid_emails:
                     email = valid_emails[0]
+                    
+            # Busca redes sociais no código fonte do site
             socials = re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', text)
             if socials:
                 social = socials[0]
@@ -121,7 +136,7 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
                 cell.value = f'=HYPERLINK("{val_str}", "Acessar Perfil")'
                 cell.font = link_font
                 cell.alignment = align_center
-            elif col_name in ["Status", "Progressão", "Tem Website"]:
+            elif col_name in ["Status", "Progressão", "Tem Website", "Nota Google", "Total Avaliações"]:
                 cell.value = val_str
                 cell.alignment = align_center
             else:
@@ -156,15 +171,15 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb.save(filename)
     return filename
 
-def run_serper_extraction(query, api_key, max_results=10, email_opt=True, redes_opt=True):
+def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_opt=True):
     extracted_data = []
     
-    url = "https://google.serper.dev/search"
+    # Endpoint de Places para extração direta do Google Maps
+    url = "https://google.serper.dev/places"
     payload = {
         "q": query,
         "gl": "br",
-        "hl": "pt-br",
-        "num": max_results
+        "hl": "pt-br"
     }
     headers = {
         'X-API-KEY': api_key,
@@ -175,47 +190,62 @@ def run_serper_extraction(query, api_key, max_results=10, email_opt=True, redes_
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         data = response.json()
         
-        organic = data.get("organic", [])
-        for item in organic:
-            site_url = item.get("link", "")
-            title = item.get("title", "")
-            snippet = item.get("snippet", "")
+        places = data.get("places", [])
+        for item in places[:max_results]:
+            company_name = item.get("title", "")
+            address = item.get("address", "")
+            phone_raw = item.get("phoneNumber", "")
+            category = item.get("category", "Comércio Local / Empresa")
+            rating = item.get("rating", "")
+            rating_count = item.get("ratingCount", "")
+            website_url = item.get("website", "")
             
-            if any(domain in site_url for domain in ["facebook.com", "instagram.com", "tripadvisor", "ifood"]):
-                continue
-                
-            company_name = title.split("-")[0].split("|")[0].strip()
-            gmaps_link = f"https://www.google.com/maps/search/{quote_plus(company_name + ' ' + query)}"
+            # Link para o perfil no Maps
+            latitude = item.get("latitude", "")
+            longitude = item.get("longitude", "")
+            if latitude and longitude:
+                gmaps_link = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
+            else:
+                gmaps_link = f"https://www.google.com/maps/search/{quote_plus(company_name + ' ' + address)}"
+            
+            # Formatação de telefone e link de WhatsApp
+            formatted_phone, wa_link = clean_and_format_phone(phone_raw)
             
             real_email, real_social = "", ""
-            if email_opt or redes_opt:
-                real_email, real_social = scrape_website_details(site_url)
+            has_website = "Não"
+            
+            if website_url:
+                has_website = "Sim"
+                if email_opt or redes_opt:
+                    real_email, real_social = scrape_website_details(website_url)
             
             extracted_data.append({
                 "Prompt": query,
-                "Nome da Empresa": company_name[:60],
-                "Categoria": "Comércio Local / Empresa",
+                "Nome da Empresa": company_name,
+                "Categoria": category,
                 "Responsável": "",
-                "Endereço": query,
-                "Telefone": "",
-                "Whatsapp": "",
+                "Endereço": address if address else query,
+                "Telefone": formatted_phone,
+                "Whatsapp": wa_link,
                 "Email": real_email,
                 "Redes Sociais": real_social,
+                "Nota Google": rating,
+                "Total Avaliações": rating_count,
                 "Status": "A Fazer",
                 "Progressão": "1º Contato",
-                "Tem Website": "Sim",
+                "Tem Website": has_website,
                 "Link Google Maps": gmaps_link,
-                "Observações": snippet[:100]
+                "Observações": f"Site Oficial: {website_url}" if website_url else "Sem site oficial"
             })
             
     except Exception as e:
-        st.error(f"Erro na requisição da API: {e}")
+        st.error(f"Erro na requisição de dados locais: {e}")
 
     return pd.DataFrame(extracted_data)
 
 if btn_extrair:
-    with st.spinner(f"Extraindo leads para '{termo_busca}'..."):
-        df_leads = run_serper_extraction(termo_busca, SERPER_API_KEY, qtd_resultados, enriquecer_emails, enriquecer_redes)
+    with st.spinner(f"Buscando estabelecimentos reais e dados do Google Maps para '{termo_busca}'..."):
+        df_leads = run_places_extraction(termo_busca, SERPER_API_KEY, qtd_resultados, enriquecer_emails, enriquecer_redes)
         
         if not df_leads.empty:
             filename = "leads_extraidos.xlsx"
@@ -223,9 +253,9 @@ if btn_extrair:
             
             st.session_state['df_leads'] = df_leads
             st.session_state['filename'] = filename
-            st.success(f"✅ Sucesso! {len(df_leads)} empresas encontradas.")
+            st.success(f"✅ Sucesso! {len(df_leads)} empresas locais extraídas com dados completos.")
         else:
-            st.warning("Nenhum resultado retornado para a busca realizada.")
+            st.warning("Nenhum resultado retornado para a busca realizada. Tente ajustar o termo de pesquisa.")
 
 if 'df_leads' in st.session_state:
     df_leads = st.session_state['df_leads']
