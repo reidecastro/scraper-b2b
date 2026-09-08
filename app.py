@@ -190,19 +190,22 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
             max_len = max(max_len, len(val))
         ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
         
+    # --- REVALIDAÇÃO DOS DROPDOWNS NO EXCEL / LIBREOFFICE ---
+    max_row = len(df) + 20  # Aplica até as linhas atuais + margem
+
     if "Status" in columns:
         status_col_idx = columns.index("Status") + 1
         col_letter = get_column_letter(status_col_idx)
-        dv_status = DataValidation(type="list", formula1='"A Fazer,Em Andamento,Concluído,Cancelado"', allow_blank=True)
+        dv_status = DataValidation(type="list", formula1='"A Fazer, Em Andamento, Concluído, Cancelado"', allow_blank=True)
         ws.add_data_validation(dv_status)
-        dv_status.add(f"{col_letter}2:{col_letter}500")
+        dv_status.add(f"{col_letter}2:{col_letter}{max_row}")
 
     if "Progressão" in columns:
         progress_col_idx = columns.index("Progressão") + 1
         col_letter = get_column_letter(progress_col_idx)
-        dv_progress = DataValidation(type="list", formula1='"1º Contato,Em Negociação,Proposta Enviada,Fechado,Perdido"', allow_blank=True)
+        dv_progress = DataValidation(type="list", formula1='"1º Contato, Em Negociação, Proposta Enviada, Fechado, Perdido"', allow_blank=True)
         ws.add_data_validation(dv_progress)
-        dv_progress.add(f"{col_letter}2:{col_letter}500")
+        dv_progress.add(f"{col_letter}2:{col_letter}{max_row}")
 
     ws.freeze_panes = 'A2'
     wb.save(filename)
@@ -223,7 +226,9 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
         for item in places[:max_results]:
             company_name = item.get("title", "")
             
-            # Captura precisa do endereço evitando fallback incorreto
+            # --- AJUSTE PRECISO DA CAPTURA DE ENDEREÇO ---
+            # O Google Places traz o endereço puro em 'address' ou 'formattedAddress'.
+            # Evita qualquer inclusão do texto de busca.
             address = item.get("address") or item.get("formattedAddress") or item.get("street") or ""
             
             phone_raw = item.get("phoneNumber") or item.get("phone") or ""
@@ -262,7 +267,7 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
                 "Nome da Empresa": company_name,
                 "Categoria": category,
                 "Responsável": "",
-                "Endereço": address,
+                "Endereço": address,  # Endereço limpo extraído diretamente do perfil local
                 "Telefone": formatted_phone,
                 "Whatsapp": wa_link,
                 "Email": real_email,
