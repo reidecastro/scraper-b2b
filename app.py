@@ -8,6 +8,10 @@ import re
 import requests
 from urllib.parse import quote_plus
 
+# ==============================================================================
+# CHECKPOINT: VERSÃO ESTÁVEL DO RASPADOR DE LEADS B2B (LINKS NATIVOS CORRIGIDOS)
+# ==============================================================================
+
 # Chave Serper API
 SERPER_API_KEY = "b7aa37b6091475c73a9bd6fdede31e0ab0c77df3"
 
@@ -161,16 +165,20 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
             col_name = columns[c_idx - 1]
             val_str = "" if pd.isna(val) or val is None else str(val)
             
+            # Ajuste específico para links clicáveis no LibreOffice Calc no Linux
             if col_name == "Link Google Maps" and val_str and val_str.startswith("http"):
                 cell.value = f'=HYPERLINK("{val_str}", "Ver no Google Maps")'
+                cell.hyperlink = val_str
                 cell.font = link_font
                 cell.alignment = align_center
             elif col_name == "Whatsapp" and val_str and val_str.startswith("http"):
                 cell.value = f'=HYPERLINK("{val_str}", "Abrir WhatsApp")'
+                cell.hyperlink = val_str
                 cell.font = link_font
                 cell.alignment = align_center
             elif col_name == "Redes Sociais" and val_str and val_str.startswith("http"):
                 cell.value = f'=HYPERLINK("{val_str}", "Acessar Perfil")'
+                cell.hyperlink = val_str
                 cell.font = link_font
                 cell.alignment = align_center
             elif col_name in ["Status", "Progressão", "Tem Website", "Nota Google", "Total Avaliações"]:
@@ -190,8 +198,8 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
             max_len = max(max_len, len(val))
         ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
         
-    # --- REVALIDAÇÃO DOS DROPDOWNS NO EXCEL / LIBREOFFICE ---
-    max_row = len(df) + 20  # Aplica até as linhas atuais + margem
+    # Validation Dropdowns
+    max_row = len(df) + 50
 
     if "Status" in columns:
         status_col_idx = columns.index("Status") + 1
@@ -225,10 +233,6 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
         places = data.get("places", [])
         for item in places[:max_results]:
             company_name = item.get("title", "")
-            
-            # --- AJUSTE PRECISO DA CAPTURA DE ENDEREÇO ---
-            # O Google Places traz o endereço puro em 'address' ou 'formattedAddress'.
-            # Evita qualquer inclusão do texto de busca.
             address = item.get("address") or item.get("formattedAddress") or item.get("street") or ""
             
             phone_raw = item.get("phoneNumber") or item.get("phone") or ""
@@ -267,7 +271,7 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
                 "Nome da Empresa": company_name,
                 "Categoria": category,
                 "Responsável": "",
-                "Endereço": address,  # Endereço limpo extraído diretamente do perfil local
+                "Endereço": address,
                 "Telefone": formatted_phone,
                 "Whatsapp": wa_link,
                 "Email": real_email,
