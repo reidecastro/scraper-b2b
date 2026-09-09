@@ -10,7 +10,7 @@ from urllib.parse import quote_plus
 import os
 
 # ==============================================================================
-# SCRAPER B2B + GESTÃO DINÂMICA DE CHAVE SERPER + CRÉDITOS NO RODAPÉ
+# SCRAPER B2B + GESTÃO DINÂMICA DE CHAVE SERPER + CRÉDITOS EM TEMPO REAL
 # ==============================================================================
 
 KEY_FILE = ".serper_key"
@@ -64,15 +64,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Função para checar créditos restantes na API Serper
+# Função para checar créditos restantes na API Serper (Usando POST)
 def get_serper_credits(api_key):
     if not api_key:
         return None
     try:
-        headers = {'X-API-KEY': api_key}
-        res = requests.get("https://google.serper.dev/credits", headers=headers, timeout=4)
+        headers = {
+            'X-API-KEY': api_key,
+            'Content-Type': 'application/json'
+        }
+        res = requests.post("https://google.serper.dev/credits", headers=headers, timeout=4)
         if res.status_code == 200:
-            return res.json().get("credits")
+            data = res.json()
+            return data.get("credits")
     except Exception:
         pass
     return None
@@ -530,14 +534,14 @@ Atenciosamente,
 st.markdown("---")
 
 credits_val = get_serper_credits(st.session_state['serper_api_key'])
-credits_display = f"**{credits_val:,}**" if credits_val is not None else "⚠️ *Inválida ou Indisponível*"
+credits_display = f"**{credits_val:,}** créditos" if credits_val is not None else "⚠️ *Não foi possível consultar*"
 
 col_f1, col_f2 = st.columns([3, 1])
 
 with col_f1:
     st.markdown(f"""
     **📊 Status da Conta Serper:**  
-    Saldo Atual de Créditos: {credits_display}  
+    Saldo Atual: {credits_display}  
     *Chave Ativa:* `{st.session_state['serper_api_key'][:8]}...{st.session_state['serper_api_key'][-4:]}`
     """)
 
