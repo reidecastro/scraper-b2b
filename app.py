@@ -7,9 +7,10 @@ from openpyxl.worksheet.datavalidation import DataValidation
 import re
 import requests
 from urllib.parse import quote_plus
+import os
 
 # ==============================================================================
-# CHECKPOINT: VERSÃO ESTÁVEL DO RASPADOR DE LEADS B2B (LINKS NATIVOS CORRIGIDOS)
+# CHECKPOINT: VERSÃO ESTÁVEL DO RASPADOR DE LEADS B2B (MODO DARK & LOGO WOLF)
 # ==============================================================================
 
 # Chave Serper API
@@ -21,19 +22,22 @@ st.set_page_config(
     layout="wide"
 )
 
+# Estilização ajustada para Dark Mode
 st.markdown("""
 <style>
-    .main-header { font-size: 2.2rem; color: #1E3A8A; font-weight: 700; margin-bottom: 0.5rem; }
-    .sub-header { font-size: 1.1rem; color: #4B5563; margin-bottom: 1.5rem; }
-    .stButton>button { background-color: #2563EB; color: white; border-radius: 6px; padding: 0.5rem 1.5rem; font-weight: 600; }
+    .main-header { font-size: 2.2rem; color: #60A5FA; font-weight: 700; margin-bottom: 0.5rem; }
+    .sub-header { font-size: 1.1rem; color: #D1D5DB; margin-bottom: 1.5rem; }
+    .stButton>button { background-color: #2563EB; color: white; border-radius: 6px; padding: 0.5rem 1.5rem; font-weight: 600; border: none; }
     .stButton>button:hover { background-color: #1D4ED8; color: white; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Extração Direta</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Extração de dados de estabelecimentos via Google Places.</div>', unsafe_allow_html=True)
-
+# --- BARRA LATERAL ---
 with st.sidebar:
+    # Exibe o logotipo se o arquivo existir no diretório
+    if os.path.exists("wolflogo.png"):
+        st.image("wolflogo.png", use_container_width=True)
+    
     st.header("⚙️ Configurações da Busca")
     termo_busca = st.text_input("Termo de Busca e Bairro", value="Pizzarias Campinas SP Bairro Castelo")
     qtd_resultados = st.number_input("Quantidade de Resultados", min_value=1, max_value=20, value=10, step=1)
@@ -45,6 +49,10 @@ with st.sidebar:
     
     st.markdown("<br>", unsafe_allow_html=True)
     btn_extrair = st.button("🚀 Iniciar Extração de Leads", use_container_width=True)
+
+# --- CABEÇALHO PRINCIPAL ---
+st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Extração Direta</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Extração de dados de estabelecimentos, empresas e profissionais.</div>', unsafe_allow_html=True)
 
 def clean_and_format_phone(phone_str):
     if not phone_str or pd.isna(phone_str):
@@ -165,7 +173,6 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
             col_name = columns[c_idx - 1]
             val_str = "" if pd.isna(val) or val is None else str(val)
             
-            # Ajuste específico para links clicáveis no LibreOffice Calc no Linux
             if col_name == "Link Google Maps" and val_str and val_str.startswith("http"):
                 cell.value = f'=HYPERLINK("{val_str}", "Ver no Google Maps")'
                 cell.hyperlink = val_str
