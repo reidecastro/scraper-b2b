@@ -10,7 +10,7 @@ from urllib.parse import quote_plus
 import os
 
 # ==============================================================================
-# SCRAPER B2B + BUSCA CNPJ/SÓCIOS + GERADOR DE SCRIPTS (CORREÇÃO DE ENDEREÇO)
+# SCRAPER B2B + BUSCA CNPJ/SÓCIOS + GERADOR DE SCRIPTS (CORREÇÃO TOTAL DE ENDEREÇO)
 # ==============================================================================
 
 SERPER_API_KEY = "b7aa37b6091475c73a9bd6fdede31e0ab0c77df3"
@@ -69,13 +69,46 @@ def clean_and_format_phone(phone_str):
     whatsapp = f"https://wa.me/55{digits}" if len(digits) in [10, 11] else ""
     return formatted_phone, whatsapp
 
+def extract_address_from_item(item, company_name=""):
+    """ Extrai o endereço verificando múltiplos campos do JSON do Serper """
+    addr = item.get("address") or item.get("formattedAddress") or item.get("vicinity") or item.get("street") or ""
+    
+    if isinstance(addr, dict):
+        # Caso o Serper devolva objeto estruturado
+        street = addr.get("street", "")
+        city = addr.get("city", "")
+        state = addr.get("state", "")
+        addr = f"{street}, {city} - {state}".strip(", -")
+    elif isinstance(addr, list):
+        addr = ", ".join([str(x) for x in addr])
+
+    # Se ainda estiver vazio, faz fallback de busca rápida no Serper Organic
+    if not addr and company_name:
+        try:
+            url = "https://google.serper.dev/search"
+            payload = {"q": f"{company_name} endereco localizacao", "gl": "br", "hl": "pt-br", "num": 2}
+            headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
+            res = requests.post(url, headers=headers, json=payload, timeout=3)
+            if res.status_code == 200:
+                data = res.json()
+                for og in data.get("organic", []):
+                    snippet = og.get("snippet", "")
+                    # Tenta capturar padrões de rua/av/bairro
+                    match = re.search(r'(Rua|R\.|Avenida|Av\.|Praça|Alameda|Rodovia)[^,\.]+,[^\.]+', snippet, re.IGNORECASE)
+                    if match:
+                        addr = match.group(0)
+                        break
+        except Exception:
+            pass
+
+    return str(addr).strip()
+
 def fetch_cnpj_and_partners(company_name, city_or_address=""):
     """ Consulta o CNPJ e Quadro Societário na BrasilAPI """
     cnpj_clean = ""
     razao_social = ""
     socios_names = []
     
-    # Limpa o endereço para extrair algo resumido se necessário
     location_hint = city_or_address.split("-")[0].strip() if city_or_address else ""
     query = f"{company_name} {location_hint} cnpj brasilapi"
     url = "https://google.serper.dev/search"
@@ -288,18 +321,8 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
         for item in places[:max_results]:
             company_name = item.get("title", "")
             
-            # --- CAPTURA AVANÇADA DE ENDEREÇO ---
-            address = (
-                item.get("address") or 
-                item.get("formattedAddress") or 
-                item.get("vicinity") or 
-                item.get("street") or 
-                ""
-            )
-            
-            # Se não encontrou no primeiro nível, tenta dentro de sub-objetos
-            if not address and isinstance(item.get("location"), dict):
-                address = item.get("location", {}).get("address", "")
+            # --- EXTRAÇÃO COMPLETA DE ENDEREÇO COM FALLBACK ---
+            address = extract_address_from_item(item, company_name)
             
             phone_raw = item.get("phoneNumber") or item.get("phone") or ""
             category = item.get("category", "Comércio Local / Empresa")
