@@ -10,7 +10,7 @@ from urllib.parse import quote_plus
 import os
 
 # ==============================================================================
-# CHECKPOINT: SCRAPER B2B + BUSCA CNPJ/SÓCIOS + GERADOR DE SCRIPTS
+# SCRAPER B2B + BUSCA CNPJ/SÓCIOS + GERADOR DE SCRIPTS (CORREÇÃO DE ENDEREÇO)
 # ==============================================================================
 
 SERPER_API_KEY = "b7aa37b6091475c73a9bd6fdede31e0ab0c77df3"
@@ -69,13 +69,15 @@ def clean_and_format_phone(phone_str):
     whatsapp = f"https://wa.me/55{digits}" if len(digits) in [10, 11] else ""
     return formatted_phone, whatsapp
 
-def fetch_cnpj_and_partners(company_name, city=""):
+def fetch_cnpj_and_partners(company_name, city_or_address=""):
     """ Consulta o CNPJ e Quadro Societário na BrasilAPI """
     cnpj_clean = ""
     razao_social = ""
     socios_names = []
     
-    query = f"{company_name} {city} cnpj brasilapi"
+    # Limpa o endereço para extrair algo resumido se necessário
+    location_hint = city_or_address.split("-")[0].strip() if city_or_address else ""
+    query = f"{company_name} {location_hint} cnpj brasilapi"
     url = "https://google.serper.dev/search"
     payload = {"q": query, "gl": "br", "hl": "pt-br", "num": 3}
     headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
@@ -285,7 +287,19 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
         places = data.get("places", [])
         for item in places[:max_results]:
             company_name = item.get("title", "")
-            address = item.get("address") or item.get("formattedAddress") or item.get("street") or ""
+            
+            # --- CAPTURA AVANÇADA DE ENDEREÇO ---
+            address = (
+                item.get("address") or 
+                item.get("formattedAddress") or 
+                item.get("vicinity") or 
+                item.get("street") or 
+                ""
+            )
+            
+            # Se não encontrou no primeiro nível, tenta dentro de sub-objetos
+            if not address and isinstance(item.get("location"), dict):
+                address = item.get("location", {}).get("address", "")
             
             phone_raw = item.get("phoneNumber") or item.get("phone") or ""
             category = item.get("category", "Comércio Local / Empresa")
@@ -421,7 +435,7 @@ Abraços!"""
 
 Olá, {socio_nome}, espero que este e-mail o encontre bem.
 
-Meu nome é [Seu Nome] e acompanho o trabalho de empresas do setor de {categoria} na região de {endereco}.
+Meu nome é [Seu Nome] e acompanho o trabalho de empresas do setor de {categoria} na região.
 
 Analisando a presença digital da {empresa_selecionada}, identifiquei algumas oportunidades claras para expandir a captação de novos clientes qualificados todos os meses.
 
