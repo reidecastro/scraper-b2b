@@ -10,10 +10,35 @@ from urllib.parse import quote_plus
 import os
 
 # ==============================================================================
-# SCRAPER B2B + BUSCA CNPJ/SÓCIOS + GERADOR DE SCRIPTS (CORREÇÃO TOTAL DE ENDEREÇO)
+# SCRAPER B2B + GESTÃO DINÂMICA DE CHAVE SERPER + CRÉDITOS NO RODAPÉ
 # ==============================================================================
 
-SERPER_API_KEY = "b7aa37b6091475c73a9bd6fdede31e0ab0c77df3"
+KEY_FILE = ".serper_key"
+DEFAULT_KEY = "b7aa37b6091475c73a9bd6fdede31e0ab0c77df3"
+
+# Função para carregar a chave salva localmente
+def load_saved_key():
+    if os.path.exists(KEY_FILE):
+        try:
+            with open(KEY_FILE, "r") as f:
+                key = f.read().strip()
+                if key:
+                    return key
+        except Exception:
+            pass
+    return DEFAULT_KEY
+
+# Função para salvar a chave localmente
+def save_key(key_str):
+    try:
+        with open(KEY_FILE, "w") as f:
+            f.write(key_str.strip())
+    except Exception as e:
+        st.error(f"Erro ao salvar a chave: {e}")
+
+# Inicializa o estado da chave API
+if 'serper_api_key' not in st.session_state:
+    st.session_state['serper_api_key'] = load_saved_key()
 
 st.set_page_config(
     page_title="Gerador de Leads B2B - Prospecção Avançada",
@@ -28,15 +53,48 @@ st.markdown("""
     .sub-header { font-size: 1.1rem; color: #D1D5DB; margin-bottom: 1.5rem; }
     .stButton>button { background-color: #2563EB; color: white; border-radius: 6px; padding: 0.5rem 1.5rem; font-weight: 600; border: none; }
     .stButton>button:hover { background-color: #1D4ED8; color: white; }
-    .script-box { background-color: #1E293B; border-left: 4px solid #3B82F6; padding: 15px; border-radius: 6px; font-family: monospace; white-space: pre-wrap; color: #F3F4F6; }
+    .footer-box {
+        background-color: #1E293B;
+        border-top: 2px solid #3B82F6;
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 40px;
+        color: #F3F4F6;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# Função para checar créditos restantes na API Serper
+def get_serper_credits(api_key):
+    if not api_key:
+        return None
+    try:
+        headers = {'X-API-KEY': api_key}
+        res = requests.get("https://google.serper.dev/credits", headers=headers, timeout=4)
+        if res.status_code == 200:
+            return res.json().get("credits")
+    except Exception:
+        pass
+    return None
 
 # --- BARRA LATERAL ---
 with st.sidebar:
     if os.path.exists("wolflogo.png"):
         st.image("wolflogo.png", use_container_width=True)
     
+    st.header("🔑 Configuração da API")
+    
+    # Campo para alterar a chave Serper
+    current_key = st.session_state['serper_api_key']
+    new_key = st.text_input("Chave Serper API", value=current_key, type="password", help="Cole sua chave ativa aqui")
+    
+    if new_key != current_key:
+        st.session_state['serper_api_key'] = new_key
+        save_key(new_key)
+        st.success("Nova Chave Salva!")
+        st.rerun()
+
+    st.markdown("---")
     st.header("⚙️ Configurações da Busca")
     termo_busca = st.text_input("Termo de Busca e Bairro", value="Pizzarias Campinas SP Bairro Castelo")
     qtd_resultados = st.number_input("Quantidade de Resultados", min_value=1, max_value=20, value=10, step=1)
@@ -70,11 +128,9 @@ def clean_and_format_phone(phone_str):
     return formatted_phone, whatsapp
 
 def extract_address_from_item(item, company_name=""):
-    """ Extrai o endereço verificando múltiplos campos do JSON do Serper """
     addr = item.get("address") or item.get("formattedAddress") or item.get("vicinity") or item.get("street") or ""
     
     if isinstance(addr, dict):
-        # Caso o Serper devolva objeto estruturado
         street = addr.get("street", "")
         city = addr.get("city", "")
         state = addr.get("state", "")
@@ -82,18 +138,16 @@ def extract_address_from_item(item, company_name=""):
     elif isinstance(addr, list):
         addr = ", ".join([str(x) for x in addr])
 
-    # Se ainda estiver vazio, faz fallback de busca rápida no Serper Organic
     if not addr and company_name:
         try:
             url = "https://google.serper.dev/search"
             payload = {"q": f"{company_name} endereco localizacao", "gl": "br", "hl": "pt-br", "num": 2}
-            headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
+            headers = {'X-API-KEY': st.session_state['serper_api_key'], 'Content-Type': 'application/json'}
             res = requests.post(url, headers=headers, json=payload, timeout=3)
             if res.status_code == 200:
                 data = res.json()
                 for og in data.get("organic", []):
                     snippet = og.get("snippet", "")
-                    # Tenta capturar padrões de rua/av/bairro
                     match = re.search(r'(Rua|R\.|Avenida|Av\.|Praça|Alameda|Rodovia)[^,\.]+,[^\.]+', snippet, re.IGNORECASE)
                     if match:
                         addr = match.group(0)
@@ -104,7 +158,6 @@ def extract_address_from_item(item, company_name=""):
     return str(addr).strip()
 
 def fetch_cnpj_and_partners(company_name, city_or_address=""):
-    """ Consulta o CNPJ e Quadro Societário na BrasilAPI """
     cnpj_clean = ""
     razao_social = ""
     socios_names = []
@@ -113,7 +166,7 @@ def fetch_cnpj_and_partners(company_name, city_or_address=""):
     query = f"{company_name} {location_hint} cnpj brasilapi"
     url = "https://google.serper.dev/search"
     payload = {"q": query, "gl": "br", "hl": "pt-br", "num": 3}
-    headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
+    headers = {'X-API-KEY': st.session_state['serper_api_key'], 'Content-Type': 'application/json'}
     
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=4)
@@ -285,7 +338,6 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
             max_len = max(max_len, len(val))
         ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
         
-    # Validation Dropdowns
     max_row = len(df) + 50
 
     if "Status" in columns:
@@ -315,13 +367,17 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
+        
+        if response.status_code == 402 or "Out of credits" in response.text:
+            st.error("❌ Os créditos da chave Serper atual ACABARAM! Altere a chave na barra lateral ou crie uma nova conta no Serper.")
+            return pd.DataFrame()
+            
         data = response.json()
         
         places = data.get("places", [])
         for item in places[:max_results]:
             company_name = item.get("title", "")
             
-            # --- EXTRAÇÃO COMPLETA DE ENDEREÇO COM FALLBACK ---
             address = extract_address_from_item(item, company_name)
             
             phone_raw = item.get("phoneNumber") or item.get("phone") or ""
@@ -387,9 +443,10 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
     return pd.DataFrame(extracted_data)
 
 if btn_extrair:
+    active_key = st.session_state['serper_api_key']
     with st.spinner(f"Extraindo leads e analisando dados para '{termo_busca}'..."):
         df_leads = run_places_extraction(
-            termo_busca, SERPER_API_KEY, qtd_resultados, 
+            termo_busca, active_key, qtd_resultados, 
             enriquecer_emails, enriquecer_redes, buscar_socios
         )
         
@@ -400,11 +457,9 @@ if btn_extrair:
             st.session_state['df_leads'] = df_leads
             st.session_state['filename'] = filename
             st.success(f"✅ Sucesso! {len(df_leads)} empresas extraídas com sucesso.")
-        else:
-            st.warning("Nenhum resultado encontrado. Tente ajustar o termo de pesquisa.")
 
 # --- APRESENTAÇÃO DOS RESULTADOS E GERADOR DE SCRIPTS ---
-if 'df_leads' in st.session_state:
+if 'df_leads' in st.session_state and not st.session_state['df_leads'].empty:
     df_leads = st.session_state['df_leads']
     filename = st.session_state['filename']
     
@@ -470,3 +525,22 @@ Atenciosamente,
 [Seu Nome] | [Sua Empresa]"""
             
             st.text_area("Cópia Direta E-mail:", value=script_email, height=220)
+
+# --- RODAPÉ COM GERENCIAMENTO DE CONTA E CRÉDITOS ---
+st.markdown("---")
+
+credits_val = get_serper_credits(st.session_state['serper_api_key'])
+credits_display = f"**{credits_val:,}**" if credits_val is not None else "⚠️ *Inválida ou Indisponível*"
+
+col_f1, col_f2 = st.columns([3, 1])
+
+with col_f1:
+    st.markdown(f"""
+    **📊 Status da Conta Serper:**  
+    Saldo Atual de Créditos: {credits_display}  
+    *Chave Ativa:* `{st.session_state['serper_api_key'][:8]}...{st.session_state['serper_api_key'][-4:]}`
+    """)
+
+with col_f2:
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.link_button("🔗 Painel Serper.dev", "https://serper.dev/dashboard", use_container_width=True)
