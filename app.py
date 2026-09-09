@@ -10,31 +10,30 @@ from urllib.parse import quote_plus
 import os
 
 # ==============================================================================
-# CHECKPOINT: VERSÃO ESTÁVEL DO RASPADOR DE LEADS B2B (MODO DARK & LOGO WOLF)
+# CHECKPOINT: SCRAPER B2B + BUSCA CNPJ/SÓCIOS + GERADOR DE SCRIPTS
 # ==============================================================================
 
-# Chave Serper API
 SERPER_API_KEY = "b7aa37b6091475c73a9bd6fdede31e0ab0c77df3"
 
 st.set_page_config(
-    page_title="Gerador de Leads B2B - Dados Reais",
+    page_title="Gerador de Leads B2B - Prospecção Avançada",
     page_icon="🎯",
     layout="wide"
 )
 
-# Estilização ajustada para Dark Mode
+# Estilização para Dark Mode
 st.markdown("""
 <style>
     .main-header { font-size: 2.2rem; color: #60A5FA; font-weight: 700; margin-bottom: 0.5rem; }
     .sub-header { font-size: 1.1rem; color: #D1D5DB; margin-bottom: 1.5rem; }
     .stButton>button { background-color: #2563EB; color: white; border-radius: 6px; padding: 0.5rem 1.5rem; font-weight: 600; border: none; }
     .stButton>button:hover { background-color: #1D4ED8; color: white; }
+    .script-box { background-color: #1E293B; border-left: 4px solid #3B82F6; padding: 15px; border-radius: 6px; font-family: monospace; white-space: pre-wrap; color: #F3F4F6; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    # Exibe o logotipo se o arquivo existir no diretório
     if os.path.exists("wolflogo.png"):
         st.image("wolflogo.png", use_container_width=True)
     
@@ -46,12 +45,13 @@ with st.sidebar:
     st.header("🔍 Opções de Enriquecimento")
     enriquecer_emails = st.checkbox("Buscar E-mails nos Sites", value=True)
     enriquecer_redes = st.checkbox("Buscar Redes Sociais (Instagram/FB)", value=True)
+    buscar_socios = st.checkbox("Buscar CNPJ & Sócios (BrasilAPI)", value=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
     btn_extrair = st.button("🚀 Iniciar Extração de Leads", use_container_width=True)
 
 # --- CABEÇALHO PRINCIPAL ---
-st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Extração Direta</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🎯 Gerador de Leads B2B - Prospecção Avançada</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Extração de dados de estabelecimentos, empresas e profissionais.</div>', unsafe_allow_html=True)
 
 def clean_and_format_phone(phone_str):
@@ -68,6 +68,51 @@ def clean_and_format_phone(phone_str):
     formatted_phone = str(phone_str)
     whatsapp = f"https://wa.me/55{digits}" if len(digits) in [10, 11] else ""
     return formatted_phone, whatsapp
+
+def fetch_cnpj_and_partners(company_name, city=""):
+    """ Consulta o CNPJ e Quadro Societário na BrasilAPI """
+    cnpj_clean = ""
+    razao_social = ""
+    socios_names = []
+    
+    query = f"{company_name} {city} cnpj brasilapi"
+    url = "https://google.serper.dev/search"
+    payload = {"q": query, "gl": "br", "hl": "pt-br", "num": 3}
+    headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
+    
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=4)
+        if res.status_code == 200:
+            data = res.json()
+            text_block = ""
+            for item in data.get("organic", []):
+                text_block += " " + item.get("snippet", "") + " " + item.get("title", "")
+            
+            cnpjs = re.findall(r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b', text_block)
+            if cnpjs:
+                cnpj_clean = re.sub(r'\D', '', cnpjs[0])
+    except Exception:
+        pass
+
+    if cnpj_clean:
+        try:
+            api_url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_clean}"
+            r = requests.get(api_url, timeout=4)
+            if r.status_code == 200:
+                cnpj_data = r.json()
+                razao_social = cnpj_data.get("razao_social", "")
+                qsa = cnpj_data.get("qsa", [])
+                for socio in qsa:
+                    nome = socio.get("nome_socio", "")
+                    qualificacao = socio.get("qualificacao_socio", "")
+                    if nome:
+                        socios_names.append(f"{nome} ({qualificacao})" if qualificacao else nome)
+        except Exception:
+            pass
+
+    cnpj_formatted = f"{cnpj_clean[:2]}.{cnpj_clean[2:5]}.{cnpj_clean[5:8]}/{cnpj_clean[8:12]}-{cnpj_clean[12:]}" if len(cnpj_clean) == 14 else ""
+    socios_str = ", ".join(socios_names) if socios_names else ""
+    return cnpj_formatted, razao_social, socios_str
 
 def fallback_search_phone_email(company_name, address, api_key):
     phone, email, social = "", "", ""
@@ -188,7 +233,7 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
                 cell.hyperlink = val_str
                 cell.font = link_font
                 cell.alignment = align_center
-            elif col_name in ["Status", "Progressão", "Tem Website", "Nota Google", "Total Avaliações"]:
+            elif col_name in ["Status", "Progressão", "Tem Website", "Nota Google", "Total Avaliações", "CNPJ"]:
                 cell.value = val_str
                 cell.alignment = align_center
             else:
@@ -226,7 +271,7 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb.save(filename)
     return filename
 
-def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_opt=True):
+def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_opt=True, socios_opt=True):
     extracted_data = []
     
     url = "https://google.serper.dev/places"
@@ -257,10 +302,12 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
             
             real_email = ""
             real_social = ""
+            cnpj = ""
+            razao_social = ""
+            socios = ""
             
-            if website_url:
-                if email_opt or redes_opt:
-                    real_email, real_social = scrape_website_details(website_url)
+            if website_url and (email_opt or redes_opt):
+                real_email, real_social = scrape_website_details(website_url)
             
             if not phone_raw or not real_email:
                 fb_phone, fb_email, fb_social = fallback_search_phone_email(company_name, address, api_key)
@@ -271,13 +318,18 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
                 if not real_social and fb_social:
                     real_social = fb_social
 
+            if socios_opt:
+                cnpj, razao_social, socios = fetch_cnpj_and_partners(company_name, address)
+
             formatted_phone, wa_link = clean_and_format_phone(phone_raw)
 
             extracted_data.append({
                 "Prompt": query,
                 "Nome da Empresa": company_name,
+                "Razão Social": razao_social,
+                "CNPJ": cnpj,
+                "Sócios / Decisores": socios if socios else "Não identificado",
                 "Categoria": category,
-                "Responsável": "",
                 "Endereço": address,
                 "Telefone": formatted_phone,
                 "Whatsapp": wa_link,
@@ -298,8 +350,11 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
     return pd.DataFrame(extracted_data)
 
 if btn_extrair:
-    with st.spinner(f"Extraindo dados para '{termo_busca}'..."):
-        df_leads = run_places_extraction(termo_busca, SERPER_API_KEY, qtd_resultados, enriquecer_emails, enriquecer_redes)
+    with st.spinner(f"Extraindo leads e analisando dados para '{termo_busca}'..."):
+        df_leads = run_places_extraction(
+            termo_busca, SERPER_API_KEY, qtd_resultados, 
+            enriquecer_emails, enriquecer_redes, buscar_socios
+        )
         
         if not df_leads.empty:
             filename = "leads_extraidos.xlsx"
@@ -311,17 +366,70 @@ if btn_extrair:
         else:
             st.warning("Nenhum resultado encontrado. Tente ajustar o termo de pesquisa.")
 
+# --- APRESENTAÇÃO DOS RESULTADOS E GERADOR DE SCRIPTS ---
 if 'df_leads' in st.session_state:
     df_leads = st.session_state['df_leads']
     filename = st.session_state['filename']
     
-    st.subheader("📋 Prévia dos Resultados Reais")
-    st.dataframe(df_leads, use_container_width=True)
+    tab1, tab2 = st.tabs(["📋 Tabela de Leads", "💬 Gerador de Script de Vendas"])
     
-    with open(filename, "rb") as file:
-        st.download_button(
-            label="📥 Baixar Planilha Excel (.xlsx)",
-            data=file,
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    with tab1:
+        st.subheader("📋 Prévia dos Resultados Reais")
+        st.dataframe(df_leads, use_container_width=True)
+        
+        with open(filename, "rb") as file:
+            st.download_button(
+                label="📥 Baixar Planilha Excel (.xlsx)",
+                data=file,
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+    with tab2:
+        st.subheader("✍️ Gerador de Abordagem Comercial (Copywriting)")
+        
+        empresa_selecionada = st.selectbox(
+            "Selecione uma empresa da lista para gerar o script:",
+            options=df_leads["Nome da Empresa"].tolist()
         )
+        
+        lead_info = df_leads[df_leads["Nome da Empresa"] == empresa_selecionada].iloc[0]
+        
+        socio_nome = lead_info["Sócios / Decisores"].split("(")[0].strip() if lead_info["Sócios / Decisores"] != "Não identificado" else "Responsável"
+        categoria = lead_info["Categoria"]
+        endereco = lead_info["Endereço"]
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 📱 Script para WhatsApp (Mensagem Curta)")
+            script_wa = f"""Olá, {socio_nome}! Tudo bem?
+
+Vi a {empresa_selecionada} aqui no Google e notei que vocês são referência em {categoria} na região.
+
+Estou entrando em contato pois ajudamos empresas do seu segmento a aumentarem o volume de clientes e otimizarem a presença digital.
+
+Você teria 5 minutos nesta semana para trocarmos uma ideia rápida sobre como podemos ajudar a {empresa_selecionada}?
+
+Abraços!"""
+            
+            st.text_area("Cópia Direta WhatsApp:", value=script_wa, height=220)
+            
+        with col2:
+            st.markdown("### ✉️ E-mail de Apresentação (Cold Mail)")
+            script_email = f"""Assunto: Oportunidade de crescimento para {empresa_selecionada}
+
+Olá, {socio_nome}, espero que este e-mail o encontre bem.
+
+Meu nome é [Seu Nome] e acompanho o trabalho de empresas do setor de {categoria} na região de {endereco}.
+
+Analisando a presença digital da {empresa_selecionada}, identifiquei algumas oportunidades claras para expandir a captação de novos clientes qualificados todos os meses.
+
+Desenvolvemos estratégias sob medida que ajudam empresas como a sua a se destacarem e converterem mais oportunidades.
+
+Podemos agendar uma breve conversa de 10 minutos na próxima terça-feira às 14h para eu te apresentar esse diagnóstico gratuitamente?
+
+Atenciosamente,
+[Seu Nome] | [Sua Empresa]"""
+            
+            st.text_area("Cópia Direta E-mail:", value=script_email, height=220)
