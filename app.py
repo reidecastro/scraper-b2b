@@ -13,6 +13,16 @@ import os
 # SCRAPER B2B + GESTÃO DINÂMICA DE CHAVE SERPER + CRÉDITOS EM TEMPO REAL
 # ==============================================================================
 
+# --- Integração com Scrapling (impersonation de TLS/browser real) ---
+# Requisito: pip install "scrapling[fetchers]"
+# Não precisa rodar "scrapling install" (que baixa browsers) para o uso abaixo,
+# pois o Fetcher.get() é puro HTTP com impersonation, sem abrir navegador.
+try:
+    from scrapling.fetchers import Fetcher
+    SCRAPLING_AVAILABLE = True
+except ImportError:
+    SCRAPLING_AVAILABLE = False
+
 KEY_FILE = ".serper_key"
 DEFAULT_KEY = "b7aa37b6091475c73a9bd6fdede31e0ab0c77df3"
 
@@ -244,25 +254,55 @@ def fallback_search_phone_email(company_name, address, api_key):
     return phone, email, social
 
 def scrape_website_details(website_url):
+    """
+    Extrai e-mail e rede social do site do lead.
+
+    Tenta primeiro com o Fetcher do Scrapling (impersonation de TLS/headers
+    de navegador real via curl_cffi) - resolve a maioria dos casos de sites
+    com Cloudflare/WAF básico que bloqueavam o requests puro por fingerprint.
+    Se o Scrapling não estiver disponível ou a chamada falhar por qualquer
+    motivo, cai automaticamente no método antigo (requests simples), então
+    o app nunca quebra por essa troca.
+    """
     email, social = "", ""
     if not website_url or not str(website_url).startswith("http"):
         return email, social
 
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        response = requests.get(website_url, headers=headers, timeout=4)
-        if response.status_code == 200:
-            text = response.text
-            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
-            if emails:
-                valid_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css', '.svg'))]
-                if valid_emails:
-                    email = valid_emails[0]
-            socials = re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', text)
-            if socials:
-                social = socials[0]
-    except Exception:
-        pass
+    text = ""
+
+    # --- Tentativa 1: Scrapling com impersonation de navegador ---
+    if SCRAPLING_AVAILABLE:
+        try:
+            page = Fetcher.get(
+                website_url,
+                impersonate='chrome',
+                stealthy_headers=True,
+                timeout=6
+            )
+            if page.status == 200:
+                text = page.html_content
+        except Exception:
+            text = ""
+
+    # --- Fallback: requests puro (comportamento original) ---
+    if not text:
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            response = requests.get(website_url, headers=headers, timeout=4)
+            if response.status_code == 200:
+                text = response.text
+        except Exception:
+            text = ""
+
+    if text:
+        emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+        if emails:
+            valid_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.webp', '.js', '.css', '.svg'))]
+            if valid_emails:
+                email = valid_emails[0]
+        socials = re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', text)
+        if socials:
+            social = socials[0]
 
     return email, social
 
