@@ -9,11 +9,16 @@ import requests
 from urllib.parse import quote_plus
 import os
 
+# --- NOVO: Scrapling (impersonation TLS) - fura Cloudflare/WAF ---
 try:
     from scrapling.fetchers import Fetcher
     SCRAPLING_AVAILABLE = True
 except ImportError:
     SCRAPLING_AVAILABLE = False
+
+# --- SEGURANCA V4 ---
+DEFAULT_KEY = "" # REMOVIDO POR SEGURANCA - use st.secrets
+# KEY_FILE removido - nao funciona no Streamlit Cloud
 
 def get_api_key():
     if "SERPER_API_KEY" in st.secrets:
@@ -22,19 +27,36 @@ def get_api_key():
         return st.session_state['serper_api_key']
     return ""
 
+def load_saved_key():
+    # V4 - Seguro: usa st.secrets
+    if "SERPER_API_KEY" in st.secrets:
+        return st.secrets["SERPER_API_KEY"]
+    return ""
+
+def save_key(key_str):
+    # V4 - Nao salva em disco no Cloud, apenas em memoria
+    try:
+        st.session_state["serper_api_key"] = key_str.strip()
+    except Exception as e:
+        st.error(f"Erro ao salvar: {e}")
+
 if 'serper_api_key' not in st.session_state:
     st.session_state['serper_api_key'] = get_api_key()
 
-st.set_page_config(page_title="Gerador de Leads B2B - Prospecção Avançada", page_icon="🎯", layout="wide")
+st.set_page_config(
+    page_title="Gerador de Leads B2B - Prospecção Avançada",
+    page_icon="🎯",
+    layout="wide"
+)
 
-st.markdown('''
+st.markdown("""
 <style>
    .main-header { font-size: 2.2rem; color: #60A5FA; font-weight: 700; margin-bottom: 0.5rem; }
    .sub-header { font-size: 1.1rem; color: #D1D5DB; margin-bottom: 1.5rem; }
    .stButton>button { background-color: #2563EB; color: white; border-radius: 6px; padding: 0.5rem 1.5rem; font-weight: 600; border: none; }
    .stButton>button:hover { background-color: #1D4ED8; color: white; }
 </style>
-''', unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 def get_serper_credits(api_key):
     if not api_key:
@@ -57,6 +79,7 @@ with st.sidebar:
     new_key = st.text_input("Chave Serper API", value=current_key, type="password")
     if new_key!= current_key:
         st.session_state['serper_api_key'] = new_key
+        save_key(new_key)
         st.success("Chave atualizada!")
     st.markdown("---")
     st.header("⚙️ Configurações da Busca")
@@ -111,8 +134,7 @@ def extract_address_from_item(item, company_name=""):
         except Exception:
             pass
     return str(addr).strip()
-
-def fetch_cnpj_and_partners(company_name, city_or_address=""):
+    def fetch_cnpj_and_partners(company_name, city_or_address=""):
     cnpj_clean = ""
     razao_social = ""
     socios_names = []
@@ -230,11 +252,11 @@ def scrape_website_details(website_url):
                 email = decoded
                 break
         if not email:
-            mailtos = re.findall(r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', text_total, re.IGNORECASE)
+            mailtos = re.findall(r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})', text_total, re.IGNORECASE)
             if mailtos:
                 email = mailtos[0]
         if not email:
-            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text_total)
+            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}', text_total)
             if emails:
                 blacklist = ['.png', '.jpg', '.webp', '.js', '.css', '.svg', 'sentry', 'wix', 'example', 'seuemail']
                 valid_emails = [e for e in emails if not any(b in e.lower() for b in blacklist) and len(e) < 60]
@@ -245,11 +267,12 @@ def scrape_website_details(website_url):
                             break
                     if not email:
                         email = valid_emails[0]
-        socials = re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', text_total)
+        socials = re.findall(r'https?://(?:www\.)?(?:instagram\\.com|facebook\\.com)/[a-zA-Z0-9_.-]+', text_total)
         if socials:
             social = socials[0]
     return email, social, metodo
-    def create_excel_report(df, filename="leads_extraidos.xlsx"):
+
+def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Leads B2B"
