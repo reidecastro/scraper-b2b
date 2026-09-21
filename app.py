@@ -128,14 +128,17 @@ def extract_address_from_item(item, company_name=""):
                 for og in data.get("organic", []):
                     snippet = og.get("snippet", "")
                     match = re.search(r'(Rua|R\.|Avenida|Av\.|Praça|Alameda|Rodovia)[^,\.]+,[^\.]+', snippet, re.IGNORECASE)
-                    if match:
-                        addr = match.group(0)
-                        break
-        except Exception:
-            pass
+        if match:
+            addr = match.group(0)
+            break
+    except Exception:
+        pass
     return str(addr).strip()
-    def fetch_cnpj_and_partners(company_name, city_or_address=""):
+
+def fetch_cnpj_and_partners(company_name, city_or_address=""):
     cnpj_clean = ""
+    razao_social = ""
+    socios_names = []
     razao_social = ""
     socios_names = []
     location_hint = city_or_address.split("-")[0].strip() if city_or_address else ""
