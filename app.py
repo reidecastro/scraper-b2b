@@ -1,21 +1,13 @@
 import streamlit as st
 import pandas as pd
+import re
+import requests
+import os
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.datavalidation import DataValidation
-import re
-import requests
-import urllib.parse
-import os
 
-try:
-    from scrapling.fetchers import Fetcher
-    SCRAPLING_AVAILABLE = True
-except ImportError:
-    SCRAPLING_AVAILABLE = False
-
-st.set_page_config(page_title="Scraper B2B - WolfLogo", page_icon="🐺", layout="wide")
+st.set_page_config(page_title="Gerador de Leads B2B", page_icon="🎯", layout="wide")
 
 DEFAULT_KEY = ""
 
@@ -26,47 +18,26 @@ def get_api_key():
         return st.session_state["serper_api_key"]
     return ""
 
-def load_saved_key():
-    return get_api_key()
-
 def save_key(k):
     st.session_state["serper_api_key"] = k
 
-def get_serper_credits(api_key):
-    return "OK" if api_key else "N/A"
-
-def clean_and_format_phone(phone):
-    if not phone:
+def clean_address(addr):
+    if not addr:
         return ""
-    digits = re.sub(r"\D", "", str(phone))
-    if len(digits) < 10:
-        return ""
-    if len(digits) == 11:
-        return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
-    if len(digits) == 10:
-        return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
-    return digits
+    return str(addr).strip()
 
-def decode_cf_email(encoded):
-    try:
-        r = int(encoded[:2], 16)
-        return "".join([chr(int(encoded[i:i+2], 16) ^ r) for i in range(2, len(encoded), 2)])
-    except:
-        return ""
-
-# ===== FUNCAO QUE ESTAVA QUEBRADA - AGORA CORRIGIDA COM TRY/FOR =====
 def extract_address_from_item(item, organic_list=None):
     addr = ""
     try:
         if isinstance(item, dict):
-            addr = item.get("address", "") or item.get("endereco", "")
+            addr = item.get("address", "") or item.get("endereco", "") or item.get("formattedAddress", "")
         if addr:
             return clean_address(addr)
         snippets = organic_list if organic_list else [item] if isinstance(item, dict) else []
         for og in snippets:
             snippet = og.get("snippet", "") if isinstance(og, dict) else ""
             try:
-                match = re.search(r'(Rua|R\.|Avenida|Av\.|Praca|Alameda|Rodovia|Travessa)[^,\n]+,[^,\n]+', snippet, re.IGNORECASE)
+                match = re.search(r'(Rua|R\.|Avenida|Av\.|Praca|Alameda|Rodovia|Travessa)[^,\n]{5,},[^,\n]{3,}', snippet, re.IGNORECASE)
                 if match:
                     addr = match.group(0)
                     break
@@ -76,182 +47,173 @@ def extract_address_from_item(item, organic_list=None):
         pass
     return clean_address(addr)
 
-def clean_address(addr):
-    if not addr:
+def clean_and_format_phone(phone):
+    if not phone:
         return ""
-    if isinstance(addr, list):
-        addr = ", ".join([str(x) for x in addr if x])
-    return str(addr).strip()
+    digits = re.sub(r"\D", "", str(phone))
+    if len(digits) < 10:
+        return ""
+    if len(digits) >= 11:
+        return f"({digits[:2]}) {digits[2:7]}-{digits[7:11]}"
+    return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
 
-def fetch_cnpj_and_partners(company_name, city_or_address=""):
-    cnpj_clean = ""
-    razao_social = ""
-    socios_names = []
+def decode_cf_email(e):
+    try:
+        r = int(e[:2], 16)
+        return "".join([chr(int(e[i:i+2], 16) ^ r) for i in range(2, len(e), 2)])
+    except:
+        return ""
+
+def fetch_cnpj_and_partners(company_name, city=""):
+    cnpj = ""
+    razao = ""
+    socios = ""
     api_key = get_api_key()
     if not api_key:
-        return "", "", ""
-    location_hint = city_or_address.split("-")[0].strip() if city_or_address else ""
-    query = f"{company_name} {location_hint} cnpj"
-    url = "https://google.serper.dev/search"
-    payload = {"q": query, "gl": "br", "hl": "pt-br", "num": 3}
-    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+        return cnpj, razao, socios
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=5)
+        q = f"{company_name} {city} cnpj"
+        url = "https://google.serper.dev/search"
+        payload = {"q": q, "gl": "br", "hl": "pt-br", "num": 3}
+        headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+        res = requests.post(url, headers=headers, json=payload, timeout=6)
         if res.status_code == 200:
-            text_block = ""
+            txt = ""
             for it in res.json().get("organic", []):
-                text_block += " " + it.get("snippet", "") + " " + it.get("title", "")
-            cnpjs = re.findall(r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b', text_block)
+                txt += " " + it.get("snippet","") + " " + it.get("title","")
+            cnpjs = re.findall(r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b", txt)
             if cnpjs:
-                cnpj_clean = re.sub(r'\D', '', cnpjs[0])
-    except Exception:
+                clean = re.sub(r"\D", "", cnpjs[0])
+                if len(clean)==14:
+                    cnpj = f"{clean[:2]}.{clean[2:5]}.{clean[5:8]}/{clean[8:12]}-{clean[12:]}"
+                    try:
+                        r2 = requests.get(f"https://brasilapi.com.br/api/cnpj/v1/{clean}", timeout=6)
+                        if r2.status_code==200:
+                            j=r2.json()
+                            razao=j.get("razao_social","")
+                            socios = ", ".join([s.get("nome_socio","") for s in j.get("qsa",[]) if s.get("nome_socio")])
+                    except:
+                        pass
+    except:
         pass
-    if cnpj_clean and len(cnpj_clean) == 14:
+    return cnpj, razao, socios
+
+def scrape_site(url, do_email=True, do_social=True):
+    email=""
+    social=""
+    if not url or not url.startswith("http"):
+        return email, social
+    full=""
+    try:
+        headers={"User-Agent":"Mozilla/5.0"}
+        r=requests.get(url, headers=headers, timeout=6)
+        if r.status_code==200:
+            full=r.text
         try:
-            r = requests.get(f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_clean}", timeout=6)
-            if r.status_code == 200:
-                j = r.json()
-                razao_social = j.get("razao_social", "")
-                for socio in j.get("qsa", []):
-                    nome = socio.get("nome_socio", "")
-                    if nome:
-                        socios_names.append(nome)
-        except Exception:
+            r2=requests.get(url.rstrip("/")+"/contato", headers=headers, timeout=5)
+            if r2.status_code==200:
+                full+=" "+r2.text
+        except:
             pass
-    cnpj_formatted = f"{cnpj_clean[:2]}.{cnpj_clean[2:5]}.{cnpj_clean[5:8]}/{cnpj_clean[8:12]}-{cnpj_clean[12:]}" if len(cnpj_clean)==14 else ""
-    return cnpj_formatted, razao_social, ", ".join(socios_names)
-
-def scrape_details(website_url):
-    email = ""
-    phone = ""
-    social = ""
-    metodo = ""
-    if not website_url or not str(website_url).startswith("http"):
-        return email, phone, social, metodo
-    urls_to_try = [website_url, website_url.rstrip("/")+"/contato", website_url.rstrip("/")+"/fale-conosco"]
-    full_text = ""
-    for u in urls_to_try[:2]:
-        page_text = ""
-        if SCRAPLING_AVAILABLE:
-            try:
-                page = Fetcher.get(u, impersonate="chrome", stealthy_headers=True, timeout=8)
-                if page.status == 200:
-                    page_text = page.html_content
-                    metodo = "Scrapling"
-            except Exception:
-                page_text = ""
-        if not page_text:
-            try:
-                r = requests.get(u, headers={"User-Agent":"Mozilla/5.0"}, timeout=6)
-                if r.status_code == 200:
-                    page_text = r.text
-                    if not metodo:
-                        metodo = "Requests"
-            except Exception:
-                page_text = ""
-        if page_text:
-            full_text += " " + page_text
-    if full_text:
-        cfs = re.findall(r'data-cfemail="([a-f0-9]+)"', full_text)
-        for cf in cfs:
-            dec = decode_cf_email(cf)
-            if dec and "@" in dec:
-                email = dec
-                break
-        if not email:
-            mails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', full_text)
-            if mails:
-                good = [m for m in mails if not any(x in m.lower() for x in [".png",".jpg","sentry","wix","example"])]
-                if good:
-                    email = good[0]
-        phones = re.findall(r'\(?\d{2}\)?\s?9?\s?\d{4}-?\d{4}', full_text)
-        if phones:
-            phone = clean_and_format_phone(phones[0])
-        socials = re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', full_text)
-        if socials:
-            social = socials[0]
-    return email, phone, social, metodo
-
-if os.path.exists("wolflogo.png"):
-    st.image("wolflogo.png", width=120)
-st.title("🐺 WolfLogo - Scraper B2B")
-st.caption("V3 Original - Corrigido + CNPJ + Socios + E-mail blindado")
-api_key = get_api_key()
+    except:
+        pass
+    if full:
+        if do_email:
+            cfs=re.findall(r'data-cfemail="([a-f0-9]+)"', full)
+            for cf in cfs:
+                dec=decode_cf_email(cf)
+                if dec and "@" in dec:
+                    email=dec
+                    break
+            if not email:
+                ms=re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', full)
+                if ms:
+                    good=[m for m in ms if not any(x in m.lower() for x in [".png",".jpg","wix","sentry","example"])]
+                    if good:
+                        email=good[0]
+        if do_social:
+            ss=re.findall(r'https?://(?:www\.)?(?:instagram\.com|facebook\.com)/[a-zA-Z0-9_.-]+', full)
+            if ss:
+                social=ss[0]
+    return email, social
 
 with st.sidebar:
-    st.header("🔑 API")
-    if api_key:
-        st.success("API Key OK (Secrets)")
-    else:
-        st.warning("Configure SERPER_API_KEY")
-        k = st.text_input("Cole sua chave Serper", type="password")
-        if st.button("Salvar chave"):
-            save_key(k)
-            st.rerun()
+    st.markdown("### 🔧 Configuração da API")
+    st.caption("Chave Serper API")
+    api_key_input = st.text_input("Chave Serper API", type="password", label_visibility="collapsed", value=get_api_key())
+    if api_key_input!= get_api_key() and api_key_input:
+        save_key(api_key_input)
     st.divider()
-    st.header("🎯 Filtros")
-    nicho = st.text_input("Nicho", value="restaurante")
-    cidade = st.text_input("Cidade/UF", value="Campinas SP")
-    limite = st.slider("Quantidade de leads", 1, 50, 10)
-    buscar = st.button("🚀 Buscar Leads", type="primary", use_container_width=True)
+    st.markdown("### ⚙️ Configurações da Busca")
+    st.caption("Termo de Busca e Bairro")
+    termo = st.text_input("Termo", value="Loja de roupas Campinas SP Nuvemsh", label_visibility="collapsed")
+    st.caption("Quantidade de Resultados")
+    quantidade = st.number_input("Qtd", min_value=1, max_value=50, value=10, label_visibility="collapsed")
     st.divider()
-    st.caption(f"Creditos: {get_serper_credits(api_key)}")
-    if SCRAPLING_AVAILABLE:
-        st.caption("✅ Scrapling ativo")
-    else:
-        st.caption("⚠️ Scrapling nao instalado")
+    st.markdown("### 🔍 Opções de Enriquecimento")
+    buscar_email = st.checkbox("Buscar E-mails nos Sites", value=True)
+    buscar_social = st.checkbox("Buscar Redes Sociais (Instagram/FB)", value=True)
+    buscar_cnpj = st.checkbox("Buscar CNPJ & Sócios (BrasilAPI)", value=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    iniciar = st.button("🚀 Iniciar Extração de Leads", type="primary", use_container_width=True)
 
+st.markdown("## 🎯 Gerador de Leads B2B - Prospecção Avançada")
+st.caption("Extração de dados de estabelecimentos, empresas e profissionais.")
+api_key = get_api_key()
 if not api_key:
-    st.info("👈 Configure a SERPER_API_KEY no menu lateral ou nos Secrets")
+    st.warning("Configure a chave Serper na lateral")
     st.stop()
 
-if buscar:
-    with st.spinner(f"Buscando {nicho} em {cidade}..."):
+if iniciar:
+    with st.spinner(f"Extraindo {termo}..."):
         url = "https://google.serper.dev/search"
-        payload = {"q": f"{nicho} em {cidade}", "gl": "br", "hl": "pt-br", "num": limite}
+        payload = {"q": termo, "gl": "br", "hl": "pt-br", "num": quantidade}
         headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
         res = requests.post(url, headers=headers, json=payload, timeout=15)
         if res.status_code == 200:
             organic = res.json().get("organic", [])
             leads = []
-            progress = st.progress(0)
-            for idx, item in enumerate(organic):
+            for item in organic:
                 title = item.get("title","")
                 link = item.get("link","")
-                progress.progress((idx+1)/len(organic))
-                endereco = extract_address_from_item(item, organic) or cidade
-                email, phone, social, metodo = scrape_details(link)
-                cnpj, razao, socios = fetch_cnpj_and_partners(title, cidade)
-                leads.append({"Empresa":title,"Endereco":endereco,"Telefone":phone,"Email":email,"Site":link,"Instagram/Facebook":social,"CNPJ":cnpj,"Razao Social":razao,"Socios":socios,"Metodo":metodo})
-            progress.empty()
-            df = pd.DataFrame(leads)
-            st.success(f"✅ {len(df)} leads encontrados!")
-            st.dataframe(df, use_container_width=True, height=500)
-            from io import BytesIO
-            output = BytesIO()
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = "Leads"
-            header_fill = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
-            header_font = Font(color="FFFFFF", bold=True, size=11)
-            thin = Side(border_style="thin", color="D9D9D9")
-            border = Border(left=thin, right=thin, top=thin, bottom=thin)
-            for col_num, col_name in enumerate(df.columns, 1):
-                cell = ws.cell(row=1, column=col_num, value=col_name)
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-                cell.border = border
-            for r_idx, row in enumerate(df.itertuples(index=False), 2):
-                for c_idx, value in enumerate(row, 1):
-                    cell = ws.cell(row=r_idx, column=c_idx, value=value)
-                    cell.border = border
-            for col in range(1, len(df.columns)+1):
-                ws.column_dimensions[get_column_letter(col)].width = 22
-            wb.save(output)
-            output.seek(0)
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📥 Baixar Excel Formatado", output.getvalue(), file_name=f"leads_{nicho}_{cidade}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-            with col2:
-                st.download_button("📥 Baixar CSV", df.to_csv(index=False).encode("utf-8"), file_name=f"leads_{nicho}_{cidade}.csv", use_container_width=True)
+                categoria = termo.split(" em ")[0] if " em " in termo else "Loja de moda feminina"
+                endereco = extract_address_from_item(item, organic) or termo
+                snippet = item.get("snippet","")
+                m_phone = re.search(r'\(?\d{2}\)?\s?9?\d{4}-?\d{4}', snippet)
+                telefone = m_phone.group(0) if m_phone else ""
+                whatsapp = ""
+                if telefone:
+                    digits = re.sub(r"\D","", telefone)
+                    whatsapp = f"https://wa.me/55{digits}" if len(digits)>=10 else ""
+                email, social = "", ""
+                if buscar_email or buscar_social:
+                    email, social = scrape_site(link, buscar_email, buscar_social)
+                cnpj, razao, socios = ("","","")
+                if buscar_cnpj:
+                    cnpj, razao, socios = fetch_cnpj_and_partners(title, termo)
+                leads.append({"Categoria":categoria,"Endereco":endereco,"Telefone":telefone,"Whatsapp":whatsapp,"Email":email,"Redes Sociais":social,"CNPJ":cnpj,"Razao":razao,"Socios":socios,"Empresa":title,"Site":link})
+            if leads:
+                df = pd.DataFrame(leads)
+                st.markdown(f'<div style="background-color:#1c4d2a; padding:12px; border-radius:8px; color:#a3e6b5;">✅ Sucesso! {len(df)} empresas extraídas com sucesso.</div>', unsafe_allow_html=True)
+                tab1, tab2 = st.tabs(["📋 Tabela de Leads", "💬 Gerador de Script de Vendas"])
+                with tab1:
+                    st.markdown("### 📋 Prévia dos Resultados Reais")
+                    st.dataframe(df, use_container_width=True, height=500)
+                    from io import BytesIO
+                    output = BytesIO()
+                    wb = openpyxl.Workbook()
+                    ws = wb.active
+                    ws.title = "Leads"
+                    header_fill = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
+                    header_font = Font(color="FFFFFF", bold=True)
+                    for col_num, col_name in enumerate(df.columns, 1):
+                        c = ws.cell(row=1, column=col_num, value=col_name)
+                        c.fill = header_fill
+                        c.font = header_font
+                    for r_idx, row in enumerate(df.itertuples(index=False), 2):
+                        for c_idx, val in enumerate(row, 1):
+                            ws.cell(row=r_idx, column=c_idx, value=val)
+                    wb.save(output)
+                    output.seek(0)
+                    st.download_button("📥 Baixar Excel", output.getvalue(), file_name=f"leads_{termo}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                    st.download_button("📥 Baixar CSV", df.to_csv(index=False).encode("utf-8"), file_name=f"leads_{termo}.csv", use_container_width=True)
