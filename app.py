@@ -7,10 +7,11 @@ from openpyxl.worksheet.datavalidation import DataValidation
 import re
 import requests
 from urllib.parse import quote_plus, urlparse
+from datetime import datetime, timezone
 import os
 
 # ==============================================================================
-# SCRAPER B2B + GESTÃO DINÂMICA DE CHAVE SERPER + CRÉDITOS EM TEMPO REAL
+# SCRAPER B2B + CRM (SUPABASE) + LOGIN GOOGLE + PAINEL ADMIN
 # ==============================================================================
 
 # --- Integração com Scrapling (impersonation de TLS/browser real) ---
@@ -23,23 +24,49 @@ try:
 except ImportError:
     SCRAPLING_AVAILABLE = False
 
+def get_supabase_client():
+    """
+    Cliente Supabase usando a service_role key — só o backend do Streamlit
+    ve essa chave (via Secrets), nunca o navegador do usuário nem o GitHub.
+    service_role ignora RLS por padrão, então o controle de quem pode ver/
+    editar o que e feito aqui no Python (checando o role do usuário logado),
+    não por policy do Postgres.
+    """
+    try:
+        from supabase import create_client
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_SERVICE_KEY"]
+        return create_client(url, key)
+    except Exception:
+        return None
+
 KEY_FILE = ".serper_key"
 HUNTER_KEY_FILE = ".hunter_key"
 
 def get_default_key(secret_name):
     """
-    Busca uma chave padrão a partir do st.secrets (configurado no painel do
-    Streamlit Cloud, em Settings > Secrets) — NUNCA hardcoded no código-fonte,
-    já que este repositório é público no GitHub. Se não houver secret
-    configurado (ex: rodando local sem .streamlit/secrets.toml), retorna
-    string vazia e o usuário precisa colar a chave manualmente na sidebar.
+    Busca a chave (Serper/Hunter) nesta ordem:
+    1. Tabela api_keys no Supabase - editável pelo admin na aba Admin,
+       sem precisar tocar no GitHub nem nos Secrets do Streamlit quando a
+       chave expira ou e trocada.
+    2. st.secrets - fallback inicial/bootstrap (configurado no Streamlit Cloud).
+    3. String vazia, se nenhum dos dois tiver.
     """
+    client = get_supabase_client()
+    if client is not None:
+        try:
+            res = client.table("api_keys").select("key_value").eq("key_name", secret_name).execute()
+            if res.data:
+                return res.data[0]["key_value"]
+        except Exception:
+            pass
     try:
         return st.secrets[secret_name]
     except Exception:
         return ""
 
-# Funções genéricas para carregar/salvar qualquer chave localmente
+# Funções genéricas para carregar/salvar qualquer chave localmente (fallback
+# secundário, útil rodando local sem Supabase configurado ainda)
 def load_saved_key(key_file, secret_name):
     if os.path.exists(key_file):
         try:
@@ -57,12 +84,6 @@ def save_key(key_file, key_str):
             f.write(key_str.strip())
     except Exception as e:
         st.error(f"Erro ao salvar a chave: {e}")
-
-# Inicializa o estado das chaves API
-if 'serper_api_key' not in st.session_state:
-    st.session_state['serper_api_key'] = load_saved_key(KEY_FILE, "SERPER_API_KEY")
-if 'hunter_api_key' not in st.session_state:
-    st.session_state['hunter_api_key'] = load_saved_key(HUNTER_KEY_FILE, "HUNTER_API_KEY")
 
 st.set_page_config(
     page_title="Gerador de Leads B2B - Prospecção Avançada",
@@ -87,6 +108,50 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# --- GATE DE LOGIN (Google OIDC nativo do Streamlit) ---
+# Requer o bloco [auth] configurado em Secrets (client_id, client_secret,
+# redirect_uri, cookie_secret, server_metadata_url do Google).
+if not st.user.is_logged_in:
+    st.markdown('<div class="main-header">🐺 WOLF Terceirizações</div>', unsafe_allow_html=True)
+    st.markdown("Faça login com sua conta Google para acessar o CRM.")
+    st.button("🔐 Entrar com Google", on_click=st.login)
+    st.stop()
+
+def get_or_create_profile(email, nome):
+    """
+    Busca o perfil (role) do usuário logado. Se é o primeiro login dele,
+    cria o registro com role padrão 'user' — exceto reidecastro@gmail.com,
+    que já nasce 'admin' (seed feito direto no banco). Atualiza last_login
+    a cada acesso.
+    """
+    client = get_supabase_client()
+    if client is None:
+        return "user"
+    try:
+        res = client.table("profiles").select("role").eq("email", email).execute()
+        agora = datetime.now(timezone.utc).isoformat()
+        if res.data:
+            client.table("profiles").update({"last_login": agora}).eq("email", email).execute()
+            return res.data[0]["role"]
+        else:
+            client.table("profiles").insert({
+                "email": email, "nome": nome, "role": "user", "last_login": agora
+            }).execute()
+            return "user"
+    except Exception:
+        return "user"
+
+if 'user_role' not in st.session_state:
+    st.session_state['user_email'] = st.user.email
+    st.session_state['user_name'] = getattr(st.user, "name", st.user.email)
+    st.session_state['user_role'] = get_or_create_profile(st.user.email, st.session_state['user_name'])
+
+# Inicializa o estado das chaves API (agora priorizando o banco, ver get_default_key)
+if 'serper_api_key' not in st.session_state:
+    st.session_state['serper_api_key'] = load_saved_key(KEY_FILE, "SERPER_API_KEY")
+if 'hunter_api_key' not in st.session_state:
+    st.session_state['hunter_api_key'] = load_saved_key(HUNTER_KEY_FILE, "HUNTER_API_KEY")
 
 # Função para checar créditos restantes na API Serper (Usando POST)
 # Nota: removida a função get_serper_credits() que existia aqui — o endpoint
@@ -118,28 +183,12 @@ def get_hunter_credits(api_key):
 with st.sidebar:
     if os.path.exists("wolflogo.png"):
         st.image("wolflogo.png", use_container_width=True)
-    
-    st.header("🔑 Configuração da API")
-    
-    # Campo para alterar a chave Serper
-    current_key = st.session_state['serper_api_key']
-    new_key = st.text_input("Chave Serper API", value=current_key, type="password", help="Cole sua chave ativa aqui")
-    
-    if new_key != current_key:
-        st.session_state['serper_api_key'] = new_key
-        save_key(KEY_FILE, new_key)
-        st.success("Nova Chave Salva!")
-        st.rerun()
 
-    # Campo para alterar a chave Hunter.io
-    current_hunter_key = st.session_state['hunter_api_key']
-    new_hunter_key = st.text_input("Chave Hunter.io API", value=current_hunter_key, type="password", help="Opcional — usada só quando o site do lead não expõe e-mail direto (plano free do Hunter tem cota mensal bem limitada)")
-
-    if new_hunter_key != current_hunter_key:
-        st.session_state['hunter_api_key'] = new_hunter_key
-        save_key(HUNTER_KEY_FILE, new_hunter_key)
-        st.success("Nova Chave Hunter Salva!")
-        st.rerun()
+    # --- Usuário logado + logout ---
+    role_badge = "👑 Admin" if st.session_state['user_role'] == 'admin' else "👤 Usuário"
+    st.markdown(f"**{st.session_state['user_name']}**  \n{role_badge}")
+    st.button("🚪 Sair", on_click=st.logout, use_container_width=True)
+    st.caption("🔑 Chaves de API gerenciadas pelo admin (aba ⚙️ Admin) — não editáveis aqui.")
 
     st.markdown("---")
     st.header("⚙️ Configurações da Busca")
@@ -430,6 +479,154 @@ def hunter_domain_search(website_url, api_key):
 
     return ""
 
+def calcular_score(row):
+    """
+    Score simples de 0-100 pra priorizar leads no CRM. Pontua presença de
+    canais de contato e qualidade da avaliação no Google — não é machine
+    learning, é uma heurística direta e fácil de ajustar depois.
+    """
+    score = 40
+    if row.get("Telefone"): score += 10
+    if row.get("Whatsapp"): score += 10
+    if row.get("Email"): score += 15
+    if row.get("Redes Sociais"): score += 5
+    if row.get("Website"): score += 10
+    try:
+        nota = float(row.get("Nota Google") or 0)
+        if nota >= 4.5: score += 10
+        elif nota >= 4.0: score += 5
+    except (ValueError, TypeError):
+        pass
+    return max(0, min(score, 100))
+
+def _valor_ou_none(v):
+    """Normaliza valores vazios/NaN do pandas para None (NULL no Postgres)."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s if s and s.lower() != "nan" else None
+
+def salvar_leads_supabase(df_leads):
+    """
+    Insere os leads extraídos no CRM (tabela leads). Dedupe: pula o lead se
+    já existir por CNPJ, ou por nome+endereço quando não há CNPJ — assim
+    rodar a mesma busca de novo não duplica nem reseta o pipeline/notas que
+    você já tenha preenchido manualmente pra esse lead.
+    Retorna (novos, ja_existentes, erro).
+    """
+    client = get_supabase_client()
+    if client is None:
+        return 0, 0, "Supabase não configurado (verifique SUPABASE_URL e SUPABASE_SERVICE_KEY nos Secrets)."
+
+    novos, existentes = 0, 0
+
+    for _, row in df_leads.iterrows():
+        cnpj = _valor_ou_none(row.get("CNPJ"))
+        nome = row.get("Nome da Empresa") or ""
+        endereco = row.get("Endereço") or ""
+
+        try:
+            if cnpj:
+                existing = client.table("leads").select("id").eq("cnpj", cnpj).execute()
+            else:
+                existing = client.table("leads").select("id").ilike("nome_empresa", nome).ilike("endereco", endereco).execute()
+
+            if existing.data:
+                existentes += 1
+                continue
+
+            nota_google = row.get("Nota Google")
+            total_avaliacoes = row.get("Total Avaliações")
+
+            client.table("leads").insert({
+                "nome_empresa": nome,
+                "razao_social": _valor_ou_none(row.get("Razão Social")),
+                "cnpj": cnpj,
+                "socios": _valor_ou_none(row.get("Sócios / Decisores")),
+                "categoria": _valor_ou_none(row.get("Categoria")),
+                "endereco": _valor_ou_none(endereco),
+                "telefone": _valor_ou_none(row.get("Telefone")),
+                "whatsapp": _valor_ou_none(row.get("Whatsapp")),
+                "email": _valor_ou_none(row.get("Email")),
+                "redes_sociais": _valor_ou_none(row.get("Redes Sociais")),
+                "website": _valor_ou_none(row.get("Website")),
+                "gmaps_link": _valor_ou_none(row.get("Link Google Maps")),
+                "nota_google": float(nota_google) if _valor_ou_none(nota_google) else None,
+                "total_avaliacoes": int(total_avaliacoes) if _valor_ou_none(total_avaliacoes) else None,
+                "origem_busca": _valor_ou_none(row.get("Prompt")),
+                "fonte_contato": _valor_ou_none(row.get("Fonte do Contato")),
+                "score": calcular_score(row),
+            }).execute()
+            novos += 1
+        except Exception:
+            continue
+
+    return novos, existentes, None
+
+def carregar_leads_crm():
+    """Lê todos os leads salvos no CRM, mais recentes primeiro."""
+    client = get_supabase_client()
+    if client is None:
+        return None
+    try:
+        res = client.table("leads").select("*").order("created_at", desc=True).execute()
+        return res.data
+    except Exception:
+        return None
+
+def atualizar_lead(lead_id, updates):
+    client = get_supabase_client()
+    if client is None:
+        return False
+    try:
+        client.table("leads").update(updates).eq("id", lead_id).execute()
+        return True
+    except Exception:
+        return False
+
+# --- Funções exclusivas do painel Admin ---
+def listar_api_keys_admin():
+    client = get_supabase_client()
+    if client is None:
+        return []
+    try:
+        return client.table("api_keys").select("*").execute().data
+    except Exception:
+        return []
+
+def salvar_api_key_admin(key_name, key_value, admin_email):
+    client = get_supabase_client()
+    if client is None:
+        return False
+    try:
+        client.table("api_keys").upsert({
+            "key_name": key_name,
+            "key_value": key_value,
+            "updated_by": admin_email,
+        }).execute()
+        return True
+    except Exception:
+        return False
+
+def listar_usuarios_admin():
+    client = get_supabase_client()
+    if client is None:
+        return []
+    try:
+        return client.table("profiles").select("*").order("created_at").execute().data
+    except Exception:
+        return []
+
+def atualizar_role_usuario(email, novo_role):
+    client = get_supabase_client()
+    if client is None:
+        return False
+    try:
+        client.table("profiles").update({"role": novo_role}).eq("email", email).execute()
+        return True
+    except Exception:
+        return False
+
 def create_excel_report(df, filename="leads_extraidos.xlsx"):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -629,6 +826,7 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
                 "Whatsapp": wa_link,
                 "Email": real_email,
                 "Redes Sociais": real_social,
+                "Website": website_url,
                 "Fonte do Contato": fonte_contato,
                 "Nota Google": rating,
                 "Total Avaliações": rating_count,
@@ -664,14 +862,30 @@ if btn_extrair:
             st.session_state['creditos_usados'] = creditos_usados
             st.success(f"✅ Sucesso! {len(df_leads)} empresas extraídas com sucesso. (≈{creditos_usados} créditos Serper usados nesta extração)")
 
-# --- APRESENTAÇÃO DOS RESULTADOS E GERADOR DE SCRIPTS ---
-if 'df_leads' in st.session_state and not st.session_state['df_leads'].empty:
-    df_leads = st.session_state['df_leads']
-    filename = st.session_state['filename']
-    
-    tab1, tab2 = st.tabs(["📋 Tabela de Leads", "💬 Gerador de Script de Vendas"])
-    
-    with tab1:
+            # --- Salva automaticamente no CRM (com dedupe) ---
+            novos, existentes, erro_crm = salvar_leads_supabase(df_leads)
+            if erro_crm:
+                st.warning(f"⚠️ CRM: {erro_crm}")
+            else:
+                st.info(f"💾 CRM atualizado: {novos} lead(s) novo(s) salvo(s), {existentes} já existiam (pipeline preservado).")
+
+# --- APRESENTAÇÃO DOS RESULTADOS, SCRIPTS, CRM E ADMIN ---
+tab_labels = ["📋 Tabela de Leads", "💬 Gerador de Script de Vendas", "🗂️ Meus Leads (CRM)"]
+is_admin = st.session_state['user_role'] == 'admin'
+if is_admin:
+    tab_labels.append("⚙️ Admin")
+
+tabs = st.tabs(tab_labels)
+tab1, tab2, tab_crm = tabs[0], tabs[1], tabs[2]
+tab_admin = tabs[3] if is_admin else None
+
+tem_resultado_recente = 'df_leads' in st.session_state and not st.session_state['df_leads'].empty
+
+with tab1:
+    if tem_resultado_recente:
+        df_leads = st.session_state['df_leads']
+        filename = st.session_state['filename']
+
         st.subheader("📋 Prévia dos Resultados Reais")
         st.dataframe(df_leads, use_container_width=True)
         
@@ -682,8 +896,13 @@ if 'df_leads' in st.session_state and not st.session_state['df_leads'].empty:
                 file_name=filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            
-    with tab2:
+    else:
+        st.info("Rode uma extração na barra lateral para ver os resultados aqui.")
+
+with tab2:
+    if tem_resultado_recente:
+        df_leads = st.session_state['df_leads']
+
         st.subheader("✍️ Gerador de Abordagem Comercial (Copywriting)")
         
         empresa_selecionada = st.selectbox(
@@ -731,6 +950,120 @@ Atenciosamente,
 [Seu Nome] | [Sua Empresa]"""
             
             st.text_area("Cópia Direta E-mail:", value=script_email, height=220)
+    else:
+        st.info("Rode uma extração na barra lateral para gerar scripts de vendas.")
+
+with tab_crm:
+    st.subheader("🗂️ Meus Leads (CRM)")
+    leads_crm = carregar_leads_crm()
+
+    if leads_crm is None:
+        st.warning("Supabase não configurado. Peça ao admin para configurar SUPABASE_URL e SUPABASE_SERVICE_KEY nos Secrets.")
+    elif not leads_crm:
+        st.info("Nenhum lead salvo ainda. Rode uma extração na barra lateral — ela salva automaticamente aqui.")
+    else:
+        df_crm = pd.DataFrame(leads_crm)
+
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        col_m1.metric("Leads Salvos", len(df_crm))
+        col_m2.metric("Alta Prioridade (score ≥75)", int((df_crm["score"] >= 75).sum()))
+        col_m3.metric("Contato Direto", int((df_crm["email"].notna() | df_crm["whatsapp"].notna()).sum()))
+        col_m4.metric("Score Médio", round(df_crm["score"].mean(), 1) if len(df_crm) else 0)
+
+        st.markdown("##### Pipeline")
+        etapas = ['Novo', 'Contatado', 'Em negociação', 'Proposta', 'Ganho', 'Perdido']
+        cols_pipeline = st.columns(len(etapas))
+        for col, etapa in zip(cols_pipeline, etapas):
+            qtd = int((df_crm["etapa_pipeline"] == etapa).sum())
+            col.metric(etapa, qtd)
+
+        st.markdown("---")
+        st.markdown("##### Editar leads (etapa, score e nota de contato)")
+        st.caption("Dados de contato (telefone/e-mail/etc.) são somente leitura aqui — a extração é a fonte da verdade pra esses campos.")
+
+        colunas_exibir = ["nome_empresa", "categoria", "endereco", "telefone", "whatsapp", "email", "etapa_pipeline", "score", "nota_contato"]
+        df_editor = df_crm[colunas_exibir].copy()
+
+        edited = st.data_editor(
+            df_editor,
+            column_config={
+                "nome_empresa": st.column_config.TextColumn("Empresa", disabled=True),
+                "categoria": st.column_config.TextColumn("Categoria", disabled=True),
+                "endereco": st.column_config.TextColumn("Endereço", disabled=True),
+                "telefone": st.column_config.TextColumn("Telefone", disabled=True),
+                "whatsapp": st.column_config.TextColumn("Whatsapp", disabled=True),
+                "email": st.column_config.TextColumn("E-mail", disabled=True),
+                "etapa_pipeline": st.column_config.SelectboxColumn("Etapa", options=etapas),
+                "score": st.column_config.NumberColumn("Score", min_value=0, max_value=100),
+                "nota_contato": st.column_config.TextColumn("Nota de Contato"),
+            },
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="crm_editor"
+        )
+
+        if st.button("💾 Salvar alterações no CRM"):
+            alteracoes = 0
+            for i in range(len(edited)):
+                original = df_editor.iloc[i]
+                novo = edited.iloc[i]
+                mudou = (
+                    original["etapa_pipeline"] != novo["etapa_pipeline"]
+                    or original["score"] != novo["score"]
+                    or (original["nota_contato"] or "") != (novo["nota_contato"] or "")
+                )
+                if mudou:
+                    atualizar_lead(df_crm.iloc[i]["id"], {
+                        "etapa_pipeline": novo["etapa_pipeline"],
+                        "score": int(novo["score"]),
+                        "nota_contato": novo["nota_contato"] or None,
+                    })
+                    alteracoes += 1
+            st.success(f"{alteracoes} lead(s) atualizado(s) com sucesso.")
+            st.rerun()
+
+if tab_admin is not None:
+    with tab_admin:
+        st.subheader("⚙️ Painel Admin")
+
+        admin_tab_keys, admin_tab_users = st.tabs(["🔑 Chaves API", "👥 Usuários"])
+
+        with admin_tab_keys:
+            st.markdown("Edite as chaves aqui quando expirarem — não precisa tocar no GitHub nem nos Secrets do Streamlit.")
+            chaves_existentes = {k["key_name"]: k["key_value"] for k in listar_api_keys_admin()}
+
+            for nome_chave, label in [("SERPER_API_KEY", "Serper API"), ("HUNTER_API_KEY", "Hunter.io API")]:
+                valor_atual = chaves_existentes.get(nome_chave, "")
+                novo_valor = st.text_input(f"Chave {label}", value=valor_atual, type="password", key=f"admin_key_{nome_chave}")
+                if st.button(f"Salvar {label}", key=f"save_{nome_chave}"):
+                    if salvar_api_key_admin(nome_chave, novo_valor, st.session_state['user_email']):
+                        st.success(f"{label} atualizada! (vale a partir da próxima sessão de cada usuário)")
+                        st.rerun()
+                    else:
+                        st.error("Erro ao salvar — verifique a conexão com o Supabase.")
+
+        with admin_tab_users:
+            st.markdown("Usuários que já logaram no app.")
+            usuarios = listar_usuarios_admin()
+            if not usuarios:
+                st.info("Nenhum usuário cadastrado ainda (além de você).")
+            else:
+                for u in usuarios:
+                    col_a, col_b, col_c = st.columns([3, 2, 2])
+                    col_a.write(f"**{u.get('nome') or u['email']}**  \n{u['email']}")
+                    eh_voce = u['email'] == 'reidecastro@gmail.com'
+                    novo_role = col_b.selectbox(
+                        "Role", ["user", "admin"],
+                        index=["user", "admin"].index(u["role"]),
+                        key=f"role_{u['email']}",
+                        disabled=eh_voce,
+                        label_visibility="collapsed"
+                    )
+                    if col_c.button("Atualizar", key=f"upd_{u['email']}", disabled=eh_voce):
+                        if atualizar_role_usuario(u['email'], novo_role):
+                            st.success("Atualizado!")
+                            st.rerun()
 
 # --- RODAPÉ COM GERENCIAMENTO DE CONTA E CRÉDITOS ---
 st.markdown("---")
