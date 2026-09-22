@@ -4,3 +4,5 @@ openpyxl
 requests
 duckduckgo_search
 scrapling[fetchers]
+supabase
+Authlib>=1.3.2
