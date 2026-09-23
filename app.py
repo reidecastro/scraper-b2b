@@ -236,6 +236,134 @@ def clean_and_format_phone(phone_str):
     whatsapp = f"https://wa.me/55{digits}" if len(digits) in [10, 11] else ""
     return formatted_phone, whatsapp
 
+def _get_pool_keys(provider):
+    """Chaves ativas do pool pra um provider ('serper' ou 'hunter'), menos
+    usada recentemente primeiro (round-robin simples)."""
+    client = get_supabase_client()
+    if client is None:
+        return []
+    try:
+        res = (client.table("api_pool")
+               .select("*")
+               .eq("provider", provider)
+               .eq("status", "active")
+               .order("last_used_at", desc=False)
+               .execute())
+        return res.data
+    except Exception:
+        return []
+
+def _marcar_pool_key_usada(pool_id):
+    client = get_supabase_client()
+    if client is None or pool_id is None:
+        return
+    try:
+        client.table("api_pool").update({
+            "last_used_at": datetime.now(timezone.utc).isoformat()
+        }).eq("id", pool_id).execute()
+    except Exception:
+        pass
+
+def _marcar_pool_key_esgotada(pool_id, motivo):
+    client = get_supabase_client()
+    if client is None or pool_id is None:
+        return
+    try:
+        client.table("api_pool").update({
+            "status": "exhausted",
+            "last_error": motivo,
+        }).eq("id", pool_id).execute()
+    except Exception:
+        pass
+
+def _capturar_headers_debug(provider, headers_resposta):
+    """Guarda um snapshot dos headers da última resposta em session_state,
+    só pra investigação manual (visível no painel Admin > Debug). Não é
+    usado por nenhuma lógica de negócio."""
+    try:
+        st.session_state[f'_debug_headers_{provider}'] = dict(headers_resposta)
+    except Exception:
+        pass
+
+def serper_post(url, payload, credit_counter=None, timeout=10):
+    """
+    POST autenticado na Serper com hot-swap automático de chave: se o pool
+    (tabela api_pool) tiver chaves cadastradas, tenta cada uma em ordem até
+    conseguir. Uma chave é marcada como 'exhausted' e pulada nas próximas
+    tentativas quando responde 401/403/429 ou "Out of credits". Timeout
+    tenta de novo com o dobro do tempo NA MESMA chave antes de trocar (rede
+    lenta não é motivo pra descartar uma chave boa). Sem pool configurado,
+    cai pra chave única legada (session_state/secrets), mantendo tudo
+    funcionando como antes. Retorna o Response ou None se tudo falhar.
+    """
+    tentativas = list(_get_pool_keys("serper"))
+    usando_pool = bool(tentativas)
+
+    if not tentativas:
+        chave_unica = st.session_state.get('serper_api_key', '')
+        tentativas = [{"id": None, "api_key": chave_unica}] if chave_unica else []
+
+    for chave_info in tentativas:
+        api_key = chave_info.get("api_key")
+        if not api_key:
+            continue
+        headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
+
+        for tentativa_timeout in (timeout, timeout * 2):
+            try:
+                if credit_counter is not None:
+                    credit_counter[0] += 1
+                res = requests.post(url, headers=headers, json=payload, timeout=tentativa_timeout)
+                _capturar_headers_debug("serper", res.headers)
+
+                if res.status_code in (401, 403, 429) or "Out of credits" in res.text:
+                    if usando_pool:
+                        _marcar_pool_key_esgotada(chave_info["id"], f"HTTP {res.status_code}")
+                    break  # essa chave não serve — troca pra próxima do pool
+
+                if usando_pool:
+                    _marcar_pool_key_usada(chave_info["id"])
+                return res
+            except requests.exceptions.Timeout:
+                continue  # mesma chave, timeout maior
+            except requests.exceptions.RequestException:
+                break  # erro de conexão — troca de chave
+
+    return None
+
+def hunter_get(url, params, timeout=6):
+    """Equivalente ao serper_post, mas pra GET autenticado na Hunter.io
+    (sem retry de timeout, já que domain-search é rápido por natureza)."""
+    tentativas = list(_get_pool_keys("hunter"))
+    usando_pool = bool(tentativas)
+
+    if not tentativas:
+        chave_unica = st.session_state.get('hunter_api_key', '')
+        tentativas = [{"id": None, "api_key": chave_unica}] if chave_unica else []
+
+    for chave_info in tentativas:
+        api_key = chave_info.get("api_key")
+        if not api_key:
+            continue
+        p = dict(params)
+        p["api_key"] = api_key
+        try:
+            res = requests.get(url, params=p, timeout=timeout)
+            _capturar_headers_debug("hunter", res.headers)
+
+            if res.status_code in (401, 403, 429):
+                if usando_pool:
+                    _marcar_pool_key_esgotada(chave_info["id"], f"HTTP {res.status_code}")
+                continue
+
+            if usando_pool:
+                _marcar_pool_key_usada(chave_info["id"])
+            return res
+        except requests.exceptions.RequestException:
+            continue
+
+    return None
+
 def extract_address_from_item(item, company_name="", credit_counter=None):
     addr = item.get("address") or item.get("formattedAddress") or item.get("vicinity") or item.get("street") or ""
     
@@ -251,11 +379,8 @@ def extract_address_from_item(item, company_name="", credit_counter=None):
         try:
             url = "https://google.serper.dev/search"
             payload = {"q": f"{company_name} endereco localizacao", "gl": "br", "hl": "pt-br", "num": 2}
-            headers = {'X-API-KEY': st.session_state['serper_api_key'], 'Content-Type': 'application/json'}
-            if credit_counter is not None:
-                credit_counter[0] += 1
-            res = requests.post(url, headers=headers, json=payload, timeout=3)
-            if res.status_code == 200:
+            res = serper_post(url, payload, credit_counter, timeout=3)
+            if res is not None and res.status_code == 200:
                 data = res.json()
                 for og in data.get("organic", []):
                     snippet = og.get("snippet", "")
@@ -277,13 +402,10 @@ def fetch_cnpj_and_partners(company_name, city_or_address="", credit_counter=Non
     query = f"{company_name} {location_hint} cnpj brasilapi"
     url = "https://google.serper.dev/search"
     payload = {"q": query, "gl": "br", "hl": "pt-br", "num": 3}
-    headers = {'X-API-KEY': st.session_state['serper_api_key'], 'Content-Type': 'application/json'}
     
     try:
-        if credit_counter is not None:
-            credit_counter[0] += 1
-        res = requests.post(url, headers=headers, json=payload, timeout=4)
-        if res.status_code == 200:
+        res = serper_post(url, payload, credit_counter, timeout=4)
+        if res is not None and res.status_code == 200:
             data = res.json()
             text_block = ""
             for item in data.get("organic", []):
@@ -320,13 +442,10 @@ def fallback_search_phone_email(company_name, address, api_key, credit_counter=N
     query = f"{company_name} {address} telefone contato email"
     url = "https://google.serper.dev/search"
     payload = {"q": query, "gl": "br", "hl": "pt-br", "num": 3}
-    headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
     
     try:
-        if credit_counter is not None:
-            credit_counter[0] += 1
-        res = requests.post(url, headers=headers, json=payload, timeout=5)
-        if res.status_code == 200:
+        res = serper_post(url, payload, credit_counter, timeout=5)
+        if res is not None and res.status_code == 200:
             data = res.json()
             text_block = ""
             
@@ -451,10 +570,14 @@ def hunter_domain_search(website_url, api_key):
     indexação própria — não depende do HTML da página em si, então
     funciona mesmo quando o site nunca publicou e-mail em texto plano.
 
+    Passa por hunter_get, que faz hot-swap automático entre as chaves do
+    pool (aba Admin) se a atual estiver esgotada/sem autorização — o
+    parâmetro api_key vira só um fallback legado, sem pool configurado.
+
     Retorna o e-mail de maior confiança encontrado, ou "" se não achar
-    nada ou a chave/cota estiver indisponível.
+    nada ou nenhuma chave disponível conseguir responder.
     """
-    if not api_key or not website_url:
+    if not website_url:
         return ""
 
     try:
@@ -463,10 +586,10 @@ def hunter_domain_search(website_url, api_key):
             return ""
 
         url = "https://api.hunter.io/v2/domain-search"
-        params = {"domain": domain, "api_key": api_key, "limit": 3}
-        res = requests.get(url, params=params, timeout=6)
+        params = {"domain": domain, "limit": 3}
+        res = hunter_get(url, params, timeout=6)
 
-        if res.status_code == 200:
+        if res is not None and res.status_code == 200:
             data = res.json()
             emails = data.get("data", {}).get("emails", [])
             if emails:
@@ -608,6 +731,56 @@ def salvar_api_key_admin(key_name, key_value, admin_email):
     except Exception:
         return False
 
+# --- Gerenciamento do Pool de Chaves (rotação automática) ---
+def listar_pool_admin(provider=None):
+    """Todas as chaves do pool, opcionalmente filtradas por provider."""
+    client = get_supabase_client()
+    if client is None:
+        return []
+    try:
+        q = client.table("api_pool").select("*").order("provider").order("created_at")
+        if provider:
+            q = q.eq("provider", provider)
+        return q.execute().data
+    except Exception:
+        return []
+
+def adicionar_chave_pool(provider, api_key, label=""):
+    client = get_supabase_client()
+    if client is None:
+        return False, "Supabase não configurado."
+    try:
+        client.table("api_pool").insert({
+            "provider": provider,
+            "api_key": api_key,
+            "label": label or None,
+            "status": "active",
+        }).execute()
+        return True, None
+    except Exception as e:
+        # Erro mais comum aqui: unique(provider, api_key) — chave duplicada
+        return False, str(e)
+
+def atualizar_status_pool(pool_id, novo_status):
+    client = get_supabase_client()
+    if client is None:
+        return False
+    try:
+        client.table("api_pool").update({"status": novo_status, "last_error": None}).eq("id", pool_id).execute()
+        return True
+    except Exception:
+        return False
+
+def remover_chave_pool(pool_id):
+    client = get_supabase_client()
+    if client is None:
+        return False
+    try:
+        client.table("api_pool").delete().eq("id", pool_id).execute()
+        return True
+    except Exception:
+        return False
+
 def listar_usuarios_admin():
     client = get_supabase_client()
     if client is None:
@@ -725,24 +898,20 @@ def create_excel_report(df, filename="leads_extraidos.xlsx"):
 
 def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_opt=True, socios_opt=True, hunter_opt=False, hunter_key=""):
     extracted_data = []
-    credit_counter = [1]  # já conta a própria busca Places como 1 crédito
+    credit_counter = [0]
     
     url = "https://google.serper.dev/places"
     payload = {"q": query, "gl": "br", "hl": "pt-br"}
-    headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
     
     try:
-        # A busca Places pode demorar mais que o normal em consultas muito
-        # específicas geograficamente (bairro + categoria) sem que isso
-        # signifique "poucos resultados" — é só lentidão pontual do lado da
-        # Serper. Por isso, em vez de falhar direto no primeiro timeout,
-        # tenta de novo uma vez com um timeout maior antes de desistir.
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=10)
-        except requests.exceptions.Timeout:
-            st.warning("⏳ A busca demorou mais que o normal, tentando de novo com mais tempo...")
-            credit_counter[0] += 1  # a tentativa anterior pode ter consumido crédito mesmo sem resposta
-            response = requests.post(url, headers=headers, json=payload, timeout=25)
+        # serper_post já cuida do retry em timeout (mesma chave, timeout
+        # dobrado) e do hot-swap pra próxima chave do pool em caso de
+        # esgotamento/erro — nenhuma dessas lógicas precisa mais estar aqui.
+        response = serper_post(url, payload, credit_counter, timeout=10)
+
+        if response is None:
+            st.error("❌ Não foi possível completar a busca — todas as chaves Serper disponíveis falharam (esgotadas, sem autorização, ou fora do ar). Confira o pool de chaves na aba ⚙️ Admin.")
+            return pd.DataFrame(), credit_counter[0]
         
         if response.status_code == 402 or "Out of credits" in response.text:
             st.error("❌ Os créditos da chave Serper atual ACABARAM! Altere a chave na barra lateral ou crie uma nova conta no Serper.")
@@ -838,7 +1007,7 @@ def run_places_extraction(query, api_key, max_results=10, email_opt=True, redes_
             })
             
     except requests.exceptions.Timeout:
-        st.error("❌ A Serper não respondeu mesmo após a segunda tentativa (25s). Isso costuma ser instabilidade pontual do lado deles — tente rodar a busca de novo em alguns instantes, ou torne o termo um pouco mais amplo (ex: tire o bairro) se persistir.")
+        st.error("❌ A Serper não respondeu a tempo, mesmo com o retry automático. Isso costuma ser instabilidade pontual do lado deles — tente rodar a busca de novo em alguns instantes, ou torne o termo um pouco mais amplo (ex: tire o bairro) se persistir.")
     except Exception as e:
         st.error(f"Erro na requisição: {e}")
 
@@ -1027,7 +1196,53 @@ if tab_admin is not None:
     with tab_admin:
         st.subheader("⚙️ Painel Admin")
 
-        admin_tab_keys, admin_tab_users = st.tabs(["🔑 Chaves API", "👥 Usuários"])
+        admin_tab_pool, admin_tab_keys, admin_tab_users, admin_tab_debug = st.tabs(
+            ["🔄 Pool de Chaves", "🔑 Chave Única (legado)", "👥 Usuários", "🐛 Debug"]
+        )
+
+        with admin_tab_pool:
+            st.markdown("Cadastre **várias** chaves por provider. O sistema tenta a menos usada recentemente primeiro, e troca sozinho (hot-swap) pra próxima quando uma responde 401/403/429 (esgotada/sem autorização).")
+
+            for provider, label in [("serper", "Serper"), ("hunter", "Hunter.io")]:
+                st.markdown(f"##### {label}")
+                chaves_provider = [k for k in listar_pool_admin() if k["provider"] == provider]
+
+                if not chaves_provider:
+                    st.caption(f"Nenhuma chave {label} no pool ainda — sem pool, o app usa a chave única da aba ao lado (compatibilidade).")
+                else:
+                    for k in chaves_provider:
+                        col_a, col_b, col_c, col_d = st.columns([3, 2, 2, 2])
+                        apelido = k.get("label") or "(sem apelido)"
+                        mascara = k["api_key"][:8] + "..." + k["api_key"][-4:] if len(k["api_key"]) > 12 else k["api_key"]
+                        col_a.write(f"**{apelido}**  \n`{mascara}`")
+                        status_cor = {"active": "🟢 Ativa", "exhausted": "🔴 Esgotada", "inactive": "⚪ Inativa"}
+                        col_b.write(status_cor.get(k["status"], k["status"]))
+                        if k.get("last_error"):
+                            col_b.caption(f"Último erro: {k['last_error']}")
+                        if k["status"] != "active":
+                            if col_c.button("Reativar", key=f"reativar_{k['id']}"):
+                                atualizar_status_pool(k["id"], "active")
+                                st.rerun()
+                        else:
+                            if col_c.button("Desativar", key=f"desativar_{k['id']}"):
+                                atualizar_status_pool(k["id"], "inactive")
+                                st.rerun()
+                        if col_d.button("Remover", key=f"remover_{k['id']}"):
+                            remover_chave_pool(k["id"])
+                            st.rerun()
+
+                with st.form(key=f"add_pool_{provider}", clear_on_submit=True):
+                    nova_chave = st.text_input(f"Nova chave {label}", type="password", key=f"nova_chave_{provider}")
+                    apelido_novo = st.text_input("Apelido (opcional, ex: 'conta 2')", key=f"apelido_{provider}")
+                    if st.form_submit_button(f"Adicionar ao pool {label}"):
+                        if nova_chave.strip():
+                            ok, erro = adicionar_chave_pool(provider, nova_chave.strip(), apelido_novo.strip())
+                            if ok:
+                                st.success("Chave adicionada!")
+                                st.rerun()
+                            else:
+                                st.error(f"Erro ao adicionar (provavelmente chave duplicada): {erro}")
+                st.markdown("---")
 
         with admin_tab_keys:
             st.markdown("Edite as chaves aqui quando expirarem — não precisa tocar no GitHub nem nos Secrets do Streamlit.")
@@ -1064,6 +1279,16 @@ if tab_admin is not None:
                         if atualizar_role_usuario(u['email'], novo_role):
                             st.success("Atualizado!")
                             st.rerun()
+
+        with admin_tab_debug:
+            st.markdown("Snapshot dos headers da **última** resposta de cada API nesta sessão — só pra investigar se existe algum campo de saldo/crédito trafegando aí (ex: procurando por algo como `x-remaining-credits`). Não afeta nenhuma lógica do app.")
+            for provider, label in [("serper", "Serper"), ("hunter", "Hunter.io")]:
+                st.markdown(f"##### {label}")
+                headers_debug = st.session_state.get(f'_debug_headers_{provider}')
+                if headers_debug:
+                    st.json(headers_debug)
+                else:
+                    st.caption("Nenhuma chamada feita ainda nesta sessão — rode uma extração e volte aqui.")
 
 # --- RODAPÉ COM GERENCIAMENTO DE CONTA E CRÉDITOS ---
 st.markdown("---")
